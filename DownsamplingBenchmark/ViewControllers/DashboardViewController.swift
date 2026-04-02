@@ -19,6 +19,14 @@ final class DashboardViewController: UIViewController {
     private let gpuMetricsCard = MetricCardView()
     private let systemMetricsCard = MetricCardView()
 
+    // MARK: - Full Benchmark
+
+    private let fullBenchmarkButton = UIButton(type: .system)
+    private let exportButton = UIButton(type: .system)
+    private let progressLabel = UILabel()
+    private var fullRunner: FullBenchmarkRunner?
+    private var lastReport: FullBenchmarkReport?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
@@ -86,6 +94,8 @@ final class DashboardViewController: UIViewController {
             contentStack.addArrangedSubview($0)
         }
 
+        setupFullBenchmarkUI()
+
         let safeArea = view.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: safeArea.topAnchor),
@@ -99,6 +109,118 @@ final class DashboardViewController: UIViewController {
             contentStack.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: -12),
             contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor, constant: -32),
         ])
+    }
+
+    private func setupFullBenchmarkUI() {
+        let separator = UIView()
+        separator.backgroundColor = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        contentStack.addArrangedSubview(separator)
+
+        let titleLabel = UILabel()
+        titleLabel.text = "全量跑分（6 种算法对比）"
+        titleLabel.font = .systemFont(ofSize: 16, weight: .bold)
+        contentStack.addArrangedSubview(titleLabel)
+
+        fullBenchmarkButton.setTitle("  开始全量跑分", for: .normal)
+        fullBenchmarkButton.setImage(UIImage(systemName: "play.circle.fill"), for: .normal)
+        fullBenchmarkButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        fullBenchmarkButton.backgroundColor = .systemBlue
+        fullBenchmarkButton.setTitleColor(.white, for: .normal)
+        fullBenchmarkButton.tintColor = .white
+        fullBenchmarkButton.layer.cornerRadius = 10
+        fullBenchmarkButton.translatesAutoresizingMaskIntoConstraints = false
+        fullBenchmarkButton.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        fullBenchmarkButton.addTarget(self, action: #selector(startFullBenchmark), for: .touchUpInside)
+        contentStack.addArrangedSubview(fullBenchmarkButton)
+
+        progressLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        progressLabel.textColor = .secondaryLabel
+        progressLabel.textAlignment = .center
+        progressLabel.isHidden = true
+        contentStack.addArrangedSubview(progressLabel)
+
+        exportButton.setTitle("  复制 JSON 到剪贴板", for: .normal)
+        exportButton.setImage(UIImage(systemName: "doc.on.clipboard"), for: .normal)
+        exportButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        exportButton.backgroundColor = .systemGreen
+        exportButton.setTitleColor(.white, for: .normal)
+        exportButton.tintColor = .white
+        exportButton.layer.cornerRadius = 10
+        exportButton.translatesAutoresizingMaskIntoConstraints = false
+        exportButton.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        exportButton.addTarget(self, action: #selector(exportJSON), for: .touchUpInside)
+        exportButton.isHidden = true
+        contentStack.addArrangedSubview(exportButton)
+    }
+
+    @objc private func startFullBenchmark() {
+        guard fullRunner == nil || !(fullRunner!.isRunning) else { return }
+
+        fullBenchmarkButton.isEnabled = false
+        fullBenchmarkButton.setTitle("  跑分中...", for: .normal)
+        fullBenchmarkButton.backgroundColor = .systemGray
+        exportButton.isHidden = true
+        progressLabel.isHidden = false
+        lastReport = nil
+
+        let sf = scaleFactor
+        let runner = FullBenchmarkRunner(scaleFactor: sf, framesToCollect: 60)
+
+        runner.onProgress = { [weak self] msg in
+            self?.progressLabel.text = msg
+        }
+
+        runner.onComplete = { [weak self] report in
+            guard let self else { return }
+            self.lastReport = report
+            self.fullRunner = nil
+
+            self.fullBenchmarkButton.isEnabled = true
+            self.fullBenchmarkButton.setTitle("  重新跑分", for: .normal)
+            self.fullBenchmarkButton.backgroundColor = .systemBlue
+            self.progressLabel.text = "跑分完成！共测试 \(report.results.count) 种算法"
+            self.exportButton.isHidden = false
+
+            self.showResultsSummary(report)
+        }
+
+        fullRunner = runner
+        runner.start()
+    }
+
+    @objc private func exportJSON() {
+        guard let report = lastReport,
+              let json = FullBenchmarkRunner.reportToJSON(report) else { return }
+
+        UIPasteboard.general.string = json
+
+        let alert = UIAlertController(
+            title: "已复制到剪贴板",
+            message: "JSON 数据（\(json.count) 字符）已复制，可直接粘贴给 AI 分析并写入 README。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
+    }
+
+    private func showResultsSummary(_ report: FullBenchmarkReport) {
+        let existingCards = contentStack.arrangedSubviews.filter { $0.tag == 999 }
+        existingCards.forEach { $0.removeFromSuperview() }
+
+        for r in report.results {
+            let card = MetricCardView()
+            card.tag = 999
+            card.titleText = "\(r.type): \(r.name)"
+            let lines = [
+                String(format: "平均: %.2f ms  |  最小: %.2f ms  |  最大: %.2f ms", r.avgTime, r.minTime, r.maxTime),
+                String(format: "P99: %.2f ms  |  方差: %.4f  |  FPS: %.1f", r.p99Time, r.variance, r.fps),
+                String(format: "CPU占用: %.1f%%  |  峰值内存: %.1f MB", r.avgCPU, r.peakMemory),
+            ]
+            card.setDetail(lines.joined(separator: "\n"))
+            contentStack.addArrangedSubview(card)
+        }
     }
 
     private func setupCamera() {
@@ -132,6 +254,11 @@ final class DashboardViewController: UIViewController {
     }
 
     private func processFrame(_ pixelBuffer: CVPixelBuffer) {
+        if let runner = fullRunner, runner.isRunning {
+            runner.collectFrame(pixelBuffer)
+            return
+        }
+
         guard !isProcessing else { return }
         isProcessing = true
 
@@ -217,6 +344,10 @@ final class MetricCardView: UIView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    func setDetail(_ text: String) {
+        detailLabel.text = text
+    }
 
     func update(with m: AggregatedMetrics, label: String) {
         titleLabel.text = "\(titleText) — \(label)"

@@ -26,6 +26,7 @@
 		AA000017 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB000017 /* Assets.xcassets */; };
 		AA000018 /* UIGraphicsDownsampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000021 /* UIGraphicsDownsampler.swift */; };
 		AA000019 /* CoreImageDownsampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000022 /* CoreImageDownsampler.swift */; };
+		AA000020 /* FullBenchmarkRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000023 /* FullBenchmarkRunner.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -50,6 +51,7 @@
 		BB000020 /* DownsamplingBenchmark.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DownsamplingBenchmark.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB000021 /* UIGraphicsDownsampler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIGraphicsDownsampler.swift; sourceTree = "<group>"; };
 		BB000022 /* CoreImageDownsampler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreImageDownsampler.swift; sourceTree = "<group>"; };
+		BB000023 /* FullBenchmarkRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullBenchmarkRunner.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -131,6 +133,7 @@
 			children = (
 				BB000010 /* BenchmarkEngine.swift */,
 				BB000011 /* BenchmarkResult.swift */,
+				BB000023 /* FullBenchmarkRunner.swift */,
 			);
 			path = Benchmark;
 			sourceTree = "<group>";
@@ -249,6 +252,7 @@
 				AA000016 /* LineChartView.swift in Sources */,
 				AA000018 /* UIGraphicsDownsampler.swift in Sources */,
 				AA000019 /* CoreImageDownsampler.swift in Sources */,
+				AA000020 /* FullBenchmarkRunner.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -317,7 +321,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = SF48M77QDN;
+				DEVELOPMENT_TEAM = 29RRD5KNP9;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DownsamplingBenchmark/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "需要访问摄像头以进行实时 Downsampling 性能对比测试";
@@ -344,7 +348,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = SF48M77QDN;
+				DEVELOPMENT_TEAM = 29RRD5KNP9;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DownsamplingBenchmark/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "需要访问摄像头以进行实时 Downsampling 性能对比测试";
