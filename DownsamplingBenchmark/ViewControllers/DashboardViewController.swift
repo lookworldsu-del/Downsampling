@@ -1,5 +1,5 @@
 import UIKit
-
+import AVFoundation
 final class DashboardViewController: UIViewController {
 
     private let benchmarkEngine = BenchmarkEngine()

@@ -1,6 +1,7 @@
 import Accelerate
 import CoreVideo
 import CoreGraphics
+import QuartzCore
 
 final class VImageDownsampler: Downsampler {
 

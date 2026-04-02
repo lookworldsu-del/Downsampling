@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreVideo
+import QuartzCore
 
 final class CGContextDownsampler: Downsampler {
 

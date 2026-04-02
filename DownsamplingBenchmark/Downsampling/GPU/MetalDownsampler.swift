@@ -1,6 +1,7 @@
 import Metal
 import CoreVideo
 import CoreGraphics
+import QuartzCore
 
 final class MetalDownsampler: Downsampler {
 

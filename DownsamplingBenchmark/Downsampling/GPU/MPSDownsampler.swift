@@ -2,6 +2,7 @@ import Metal
 import MetalPerformanceShaders
 import CoreVideo
 import CoreGraphics
+import QuartzCore
 
 final class MPSDownsampler: Downsampler {
 
