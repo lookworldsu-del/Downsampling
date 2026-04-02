@@ -58,7 +58,7 @@ final class BenchmarkEngine {
         var totalUsage: Double = 0
         for i in 0..<Int(threadCount) {
             var info = thread_basic_info()
-            var infoCount = mach_msg_type_number_t(THREAD_BASIC_INFO_COUNT)
+            var infoCount = mach_msg_type_number_t(MemoryLayout<thread_basic_info_data_t>.size / MemoryLayout<natural_t>.size)
             let kr = withUnsafeMutablePointer(to: &info) {
                 $0.withMemoryRebound(to: integer_t.self, capacity: Int(infoCount)) {
                     thread_info(threads[i], thread_flavor_t(THREAD_BASIC_INFO), $0, &infoCount)

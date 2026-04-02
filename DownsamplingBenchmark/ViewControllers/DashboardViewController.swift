@@ -1,5 +1,6 @@
 import UIKit
 import AVFoundation
+
 final class DashboardViewController: UIViewController {
 
     private let benchmarkEngine = BenchmarkEngine()
@@ -111,12 +112,14 @@ final class DashboardViewController: UIViewController {
         switch cpuID {
         case .vImage: cpuDownsampler = VImageDownsampler()
         case .cgContext: cpuDownsampler = CGContextDownsampler()
+        case .uiGraphics: cpuDownsampler = UIGraphicsDownsampler()
         default: cpuDownsampler = VImageDownsampler()
         }
         let gpuID = DownsamplerID(rawValue: defaults.string(forKey: "gpuAlgorithm") ?? "") ?? .metalCompute
         switch gpuID {
         case .metalCompute: gpuDownsampler = MetalDownsampler()
         case .mps: gpuDownsampler = MPSDownsampler()
+        case .coreImage: gpuDownsampler = CoreImageDownsampler()
         default: gpuDownsampler = MetalDownsampler()
         }
         scaleFactor = defaults.float(forKey: "scaleFactor")

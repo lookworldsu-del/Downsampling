@@ -11,8 +11,8 @@ final class SettingsViewController: UIViewController {
         case cameraPreset
     }
 
-    private let cpuOptions: [DownsamplerID] = [.vImage, .cgContext]
-    private let gpuOptions: [DownsamplerID] = [.metalCompute, .mps]
+    private let cpuOptions: [DownsamplerID] = [.vImage, .cgContext, .uiGraphics]
+    private let gpuOptions: [DownsamplerID] = [.metalCompute, .mps, .coreImage]
     private let scaleOptions: [ScaleFactor] = ScaleFactor.allCases
     private let presetOptions: [CameraManager.Preset] = [.hd1080p, .uhd4K]
 

@@ -137,6 +137,7 @@ final class ComparisonViewController: UIViewController {
         switch cpuID {
         case .vImage: cpuDownsampler = VImageDownsampler()
         case .cgContext: cpuDownsampler = CGContextDownsampler()
+        case .uiGraphics: cpuDownsampler = UIGraphicsDownsampler()
         default: cpuDownsampler = VImageDownsampler()
         }
 
@@ -144,6 +145,7 @@ final class ComparisonViewController: UIViewController {
         switch gpuID {
         case .metalCompute: gpuDownsampler = MetalDownsampler()
         case .mps: gpuDownsampler = MPSDownsampler()
+        case .coreImage: gpuDownsampler = CoreImageDownsampler()
         default: gpuDownsampler = MetalDownsampler()
         }
 
