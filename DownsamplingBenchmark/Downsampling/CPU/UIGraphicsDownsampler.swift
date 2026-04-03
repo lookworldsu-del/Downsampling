@@ -34,14 +34,21 @@ final class UIGraphicsDownsampler: Downsampler {
         let srcImage = UIImage(cgImage: srcCGImage)
         let (dstWidth, dstHeight) = target.outputSize(inputWidth: srcWidth, inputHeight: srcHeight)
         let targetSize = CGSize(width: dstWidth, height: dstHeight)
+        let layout = target.letterboxLayout(inputWidth: srcWidth, inputHeight: srcHeight)
 
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1.0
         format.prefersExtendedRange = false
 
         let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
-        let resultImage = renderer.image { _ in
-            srcImage.draw(in: CGRect(origin: .zero, size: targetSize))
+        let resultImage = renderer.image { ctx in
+            if let lb = layout {
+                UIColor(white: 0.5, alpha: 1.0).setFill()
+                ctx.fill(CGRect(origin: .zero, size: targetSize))
+                srcImage.draw(in: CGRect(x: lb.innerX, y: lb.innerY, width: lb.innerWidth, height: lb.innerHeight))
+            } else {
+                srcImage.draw(in: CGRect(origin: .zero, size: targetSize))
+            }
         }
 
         let elapsed = CACurrentMediaTime() - start

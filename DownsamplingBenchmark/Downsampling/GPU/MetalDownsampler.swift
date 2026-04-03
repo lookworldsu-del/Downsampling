@@ -12,6 +12,7 @@ final class MetalDownsampler: Downsampler {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLComputePipelineState
+    private let letterboxPipeline: MTLComputePipelineState
     private var textureCache: CVMetalTextureCache?
 
     private var outputTexture: MTLTexture?
@@ -22,12 +23,15 @@ final class MetalDownsampler: Downsampler {
               let queue = device.makeCommandQueue(),
               let library = device.makeDefaultLibrary(),
               let function = library.makeFunction(name: "downsample_bilinear"),
-              let pipeline = try? device.makeComputePipelineState(function: function)
+              let pipeline = try? device.makeComputePipelineState(function: function),
+              let lbFunction = library.makeFunction(name: "downsample_letterbox"),
+              let lbPipeline = try? device.makeComputePipelineState(function: lbFunction)
         else { return nil }
 
         self.device = device
         self.commandQueue = queue
         self.pipelineState = pipeline
+        self.letterboxPipeline = lbPipeline
 
         var cache: CVMetalTextureCache?
         CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
@@ -55,15 +59,25 @@ final class MetalDownsampler: Downsampler {
         }
 
         let outTex = getOrCreateOutputTexture(width: dstWidth, height: dstHeight)
+        let layout = target.letterboxLayout(inputWidth: srcWidth, inputHeight: srcHeight)
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
             return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
         }
 
-        encoder.setComputePipelineState(pipelineState)
-        encoder.setTexture(inputTexture, index: 0)
-        encoder.setTexture(outTex, index: 1)
+        if let lb = layout {
+            encoder.setComputePipelineState(letterboxPipeline)
+            encoder.setTexture(inputTexture, index: 0)
+            encoder.setTexture(outTex, index: 1)
+            var params = SIMD4<Float>(Float(lb.innerX), Float(lb.innerY),
+                                      Float(lb.innerWidth), Float(lb.innerHeight))
+            encoder.setBytes(&params, length: MemoryLayout<SIMD4<Float>>.size, index: 0)
+        } else {
+            encoder.setComputePipelineState(pipelineState)
+            encoder.setTexture(inputTexture, index: 0)
+            encoder.setTexture(outTex, index: 1)
+        }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadgroupCount = MTLSize(

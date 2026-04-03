@@ -30,12 +30,16 @@ final class MPSDownsampler: Downsampler {
         self.textureCache = cache
     }
 
+    private var innerTexture: MTLTexture?
+    private var lastInnerSize: (Int, Int) = (0, 0)
+
     func downsample(_ pixelBuffer: CVPixelBuffer, target: DownsampleTarget) -> DownsampleOutput {
         let wallStart = CACurrentMediaTime()
 
         let srcWidth = CVPixelBufferGetWidth(pixelBuffer)
         let srcHeight = CVPixelBufferGetHeight(pixelBuffer)
         let (dstWidth, dstHeight) = target.outputSize(inputWidth: srcWidth, inputHeight: srcHeight)
+        let layout = target.letterboxLayout(inputWidth: srcWidth, inputHeight: srcHeight)
 
         guard let cache = textureCache else {
             return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
@@ -50,14 +54,26 @@ final class MPSDownsampler: Downsampler {
             return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
         }
 
-        let outTex = getOrCreateOutputTexture(width: dstWidth, height: dstHeight)
+        let scaleTargetW: Int
+        let scaleTargetH: Int
+        if let lb = layout {
+            scaleTargetW = lb.innerWidth
+            scaleTargetH = lb.innerHeight
+        } else {
+            scaleTargetW = dstWidth
+            scaleTargetH = dstHeight
+        }
 
-        let scaleX = Double(dstWidth) / Double(srcWidth)
-        let scaleY = Double(dstHeight) / Double(srcHeight)
-        let translateX = 0.0
-        let translateY = 0.0
+        let scaleDst: MTLTexture
+        if layout != nil {
+            scaleDst = getOrCreateInnerTexture(width: scaleTargetW, height: scaleTargetH)
+        } else {
+            scaleDst = getOrCreateOutputTexture(width: dstWidth, height: dstHeight)
+        }
 
-        var transform = MPSScaleTransform(scaleX: scaleX, scaleY: scaleY, translateX: translateX, translateY: translateY)
+        let scaleX = Double(scaleTargetW) / Double(srcWidth)
+        let scaleY = Double(scaleTargetH) / Double(srcHeight)
+        var transform = MPSScaleTransform(scaleX: scaleX, scaleY: scaleY, translateX: 0, translateY: 0)
 
         let bilinearScale = MPSImageBilinearScale(device: device)
 
@@ -67,7 +83,32 @@ final class MPSDownsampler: Downsampler {
 
         withUnsafePointer(to: &transform) { ptr in
             bilinearScale.scaleTransform = ptr
-            bilinearScale.encode(commandBuffer: commandBuffer, sourceTexture: inputTexture, destinationTexture: outTex)
+            bilinearScale.encode(commandBuffer: commandBuffer, sourceTexture: inputTexture, destinationTexture: scaleDst)
+        }
+
+        if let lb = layout {
+            let outTex = getOrCreateOutputTexture(width: dstWidth, height: dstHeight)
+
+            if let blit = commandBuffer.makeBlitCommandEncoder() {
+                let region = MTLRegionMake2D(0, 0, dstWidth, dstHeight)
+                let bytesPerRow = dstWidth * 4
+                let totalBytes = bytesPerRow * dstHeight
+                var grayPixels = [UInt8](repeating: 0, count: totalBytes)
+                for i in stride(from: 0, to: totalBytes, by: 4) {
+                    grayPixels[i]     = 128
+                    grayPixels[i + 1] = 128
+                    grayPixels[i + 2] = 128
+                    grayPixels[i + 3] = 255
+                }
+                outTex.replace(region: region, mipmapLevel: 0, withBytes: &grayPixels, bytesPerRow: bytesPerRow)
+
+                blit.copy(from: scaleDst, sourceSlice: 0, sourceLevel: 0,
+                          sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                          sourceSize: MTLSize(width: lb.innerWidth, height: lb.innerHeight, depth: 1),
+                          to: outTex, destinationSlice: 0, destinationLevel: 0,
+                          destinationOrigin: MTLOrigin(x: lb.innerX, y: lb.innerY, z: 0))
+                blit.endEncoding()
+            }
         }
 
         var gpuStartTime: TimeInterval = 0
@@ -84,10 +125,25 @@ final class MPSDownsampler: Downsampler {
         commandBuffer.waitUntilCompleted()
 
         let gpuTime = gpuEndTime - gpuStartTime
-        let image = makeImage(from: outTex, width: dstWidth, height: dstHeight)
+        let finalTex = layout != nil ? getOrCreateOutputTexture(width: dstWidth, height: dstHeight) : scaleDst
+        let image = makeImage(from: finalTex, width: dstWidth, height: dstHeight)
         let wallTime = CACurrentMediaTime() - wallStart
 
         return DownsampleOutput(image: image, processingTime: wallTime, gpuTime: gpuTime, outputWidth: dstWidth, outputHeight: dstHeight)
+    }
+
+    private func getOrCreateInnerTexture(width: Int, height: Int) -> MTLTexture {
+        if let tex = innerTexture, lastInnerSize == (width, height) {
+            return tex
+        }
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
+        )
+        desc.usage = [.shaderWrite, .shaderRead]
+        let tex = device.makeTexture(descriptor: desc)!
+        innerTexture = tex
+        lastInnerSize = (width, height)
+        return tex
     }
 
     private func getOrCreateOutputTexture(width: Int, height: Int) -> MTLTexture {

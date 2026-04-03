@@ -37,6 +37,7 @@ final class CGContextDownsampler: Downsampler {
         }
 
         let (dstWidth, dstHeight) = target.outputSize(inputWidth: srcWidth, inputHeight: srcHeight)
+        let layout = target.letterboxLayout(inputWidth: srcWidth, inputHeight: srcHeight)
 
         guard let dstContext = CGContext(
             data: nil,
@@ -51,7 +52,13 @@ final class CGContextDownsampler: Downsampler {
         }
 
         dstContext.interpolationQuality = .high
-        dstContext.draw(srcImage, in: CGRect(x: 0, y: 0, width: dstWidth, height: dstHeight))
+        if let lb = layout {
+            dstContext.setFillColor(gray: 0.5, alpha: 1.0)
+            dstContext.fill(CGRect(x: 0, y: 0, width: dstWidth, height: dstHeight))
+            dstContext.draw(srcImage, in: CGRect(x: lb.innerX, y: lb.innerY, width: lb.innerWidth, height: lb.innerHeight))
+        } else {
+            dstContext.draw(srcImage, in: CGRect(x: 0, y: 0, width: dstWidth, height: dstHeight))
+        }
 
         let image = dstContext.makeImage()
         let elapsed = CACurrentMediaTime() - start

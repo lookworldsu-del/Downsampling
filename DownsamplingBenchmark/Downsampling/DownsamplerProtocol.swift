@@ -23,13 +23,24 @@ enum DownsamplerID: String, CaseIterable {
     }
 }
 
+struct LetterboxLayout: Equatable {
+    let canvasWidth: Int
+    let canvasHeight: Int
+    let innerX: Int
+    let innerY: Int
+    let innerWidth: Int
+    let innerHeight: Int
+}
+
 enum DownsampleTarget: Equatable {
     case scale(Float)
     case fixedSize(width: Int, height: Int)
+    case letterbox(width: Int, height: Int)
 
     static let allPresets: [DownsampleTarget] = [
         .scale(0.5), .scale(0.25), .scale(0.125),
         .fixedSize(width: 416, height: 416),
+        .letterbox(width: 416, height: 416),
     ]
 
     func outputSize(inputWidth: Int, inputHeight: Int) -> (width: Int, height: Int) {
@@ -39,7 +50,21 @@ enum DownsampleTarget: Equatable {
                     max(1, Int(Float(inputHeight) * factor)))
         case .fixedSize(let w, let h):
             return (w, h)
+        case .letterbox(let w, let h):
+            return (w, h)
         }
+    }
+
+    func letterboxLayout(inputWidth: Int, inputHeight: Int) -> LetterboxLayout? {
+        guard case .letterbox(let cw, let ch) = self else { return nil }
+        let scale = min(Float(cw) / Float(inputWidth), Float(ch) / Float(inputHeight))
+        let innerW = max(1, Int(Float(inputWidth) * scale))
+        let innerH = max(1, Int(Float(inputHeight) * scale))
+        return LetterboxLayout(
+            canvasWidth: cw, canvasHeight: ch,
+            innerX: (cw - innerW) / 2, innerY: (ch - innerH) / 2,
+            innerWidth: innerW, innerHeight: innerH
+        )
     }
 
     var displayName: String {
@@ -51,6 +76,8 @@ enum DownsampleTarget: Equatable {
             return String(format: "%.3f", f)
         case .fixedSize(let w, let h):
             return "\(w)×\(h)"
+        case .letterbox(let w, let h):
+            return "\(w)×\(h) Letterbox"
         }
     }
 
@@ -58,6 +85,7 @@ enum DownsampleTarget: Equatable {
         switch self {
         case .scale(let f): return String(format: "scale_%.3f", f)
         case .fixedSize(let w, let h): return "fixed_\(w)x\(h)"
+        case .letterbox(let w, let h): return "letterbox_\(w)x\(h)"
         }
     }
 
@@ -71,8 +99,29 @@ enum DownsampleTarget: Equatable {
                 return .fixedSize(width: w, height: h)
             }
         }
+        if key.hasPrefix("letterbox_") {
+            let parts = key.dropFirst(10).split(separator: "x")
+            if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
+                return .letterbox(width: w, height: h)
+            }
+        }
         return nil
     }
+}
+
+func letterboxComposite(innerImage: CGImage, layout: LetterboxLayout) -> CGImage? {
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+    guard let ctx = CGContext(
+        data: nil, width: layout.canvasWidth, height: layout.canvasHeight,
+        bitsPerComponent: 8, bytesPerRow: layout.canvasWidth * 4,
+        space: colorSpace, bitmapInfo: bitmapInfo
+    ) else { return nil }
+    ctx.setFillColor(gray: 0.5, alpha: 1.0)
+    ctx.fill(CGRect(x: 0, y: 0, width: layout.canvasWidth, height: layout.canvasHeight))
+    ctx.draw(innerImage, in: CGRect(x: layout.innerX, y: layout.innerY,
+                                     width: layout.innerWidth, height: layout.innerHeight))
+    return ctx.makeImage()
 }
 
 struct DownsampleOutput {

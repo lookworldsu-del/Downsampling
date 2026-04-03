@@ -19,6 +19,33 @@ kernel void downsample_bilinear(
     outTexture.write(color, gid);
 }
 
+struct LetterboxParams {
+    float2 offset;
+    float2 innerSize;
+};
+
+kernel void downsample_letterbox(
+    texture2d<float, access::sample> inTexture  [[texture(0)]],
+    texture2d<float, access::write>  outTexture [[texture(1)]],
+    constant LetterboxParams &params [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= outTexture.get_width() || gid.y >= outTexture.get_height()) {
+        return;
+    }
+
+    float2 pos = float2(gid) - params.offset;
+
+    if (pos.x < 0.0 || pos.y < 0.0 || pos.x >= params.innerSize.x || pos.y >= params.innerSize.y) {
+        outTexture.write(float4(0.5, 0.5, 0.5, 1.0), gid);
+        return;
+    }
+
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    float2 uv = (pos + 0.5) / params.innerSize;
+    outTexture.write(inTexture.sample(s, uv), gid);
+}
+
 kernel void downsample_area_average(
     texture2d<float, access::read>  inTexture  [[texture(0)]],
     texture2d<float, access::write> outTexture [[texture(1)]],
