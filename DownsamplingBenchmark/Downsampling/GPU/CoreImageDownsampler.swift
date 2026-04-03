@@ -31,7 +31,7 @@ final class CoreImageDownsampler: Downsampler {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
         guard let filter = CIFilter(name: "CILanczosScaleTransform") else {
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
+            return fail(wallStart)
         }
 
         let finalImage: CIImage
@@ -45,9 +45,7 @@ final class CoreImageDownsampler: Downsampler {
             filter.setValue(scaleY, forKey: kCIInputScaleKey)
             filter.setValue(aspectRatio, forKey: kCIInputAspectRatioKey)
 
-            guard let scaled = filter.outputImage else {
-                return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
-            }
+            guard let scaled = filter.outputImage else { return fail(wallStart) }
 
             let translated = scaled.transformed(by: CGAffineTransform(translationX: CGFloat(lb.innerX), y: CGFloat(lb.innerY)))
             let grayBg = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5))
@@ -62,9 +60,7 @@ final class CoreImageDownsampler: Downsampler {
             filter.setValue(scaleY, forKey: kCIInputScaleKey)
             filter.setValue(aspectRatio, forKey: kCIInputAspectRatioKey)
 
-            guard let output = filter.outputImage else {
-                return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
-            }
+            guard let output = filter.outputImage else { return fail(wallStart) }
             finalImage = output
         }
 
@@ -72,11 +68,21 @@ final class CoreImageDownsampler: Downsampler {
 
         let gpuStart = CACurrentMediaTime()
         guard let cgImage = ciContext.createCGImage(finalImage, from: outputRect) else {
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
+            return fail(wallStart)
         }
         let gpuTime = CACurrentMediaTime() - gpuStart
 
+        let tensor = cgImageToRGBTensor(cgImage)
+
         let wallTime = CACurrentMediaTime() - wallStart
-        return DownsampleOutput(image: cgImage, processingTime: wallTime, gpuTime: gpuTime, outputWidth: dstWidth, outputHeight: dstHeight)
+        return DownsampleOutput(image: cgImage, rgbTensor: tensor,
+                                processingTime: wallTime, gpuTime: gpuTime,
+                                outputWidth: dstWidth, outputHeight: dstHeight)
+    }
+
+    private func fail(_ wallStart: TimeInterval) -> DownsampleOutput {
+        DownsampleOutput(image: nil, rgbTensor: nil,
+                         processingTime: CACurrentMediaTime() - wallStart,
+                         gpuTime: nil, outputWidth: 0, outputHeight: 0)
     }
 }

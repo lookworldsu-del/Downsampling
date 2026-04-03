@@ -51,7 +51,6 @@ final class MPSDownsampler: Downsampler {
 
         let isYUV = isYUVFormat(pixelBuffer)
 
-        // Step 1: Get or create a BGRA source texture for MPS
         let bgraSource: MTLTexture
         if isYUV {
             guard let (yTex, uvTex) = makeYUVTextures(pixelBuffer: pixelBuffer, cache: cache) else {
@@ -80,7 +79,6 @@ final class MPSDownsampler: Downsampler {
             bgraSource = tex
         }
 
-        // Step 2: MPS bilinear scale
         let scaleTargetW: Int
         let scaleTargetH: Int
         if let lb = layout {
@@ -110,7 +108,6 @@ final class MPSDownsampler: Downsampler {
             bilinearScale.encode(commandBuffer: commandBuffer, sourceTexture: bgraSource, destinationTexture: scaleDst)
         }
 
-        // Step 3: Letterbox compositing
         if let lb = layout {
             let outTex = getOrCreateOutputTexture(width: dstWidth, height: dstHeight)
 
@@ -146,9 +143,12 @@ final class MPSDownsampler: Downsampler {
         let gpuTime = gpuEndTime - gpuStartTime
         let finalTex = layout != nil ? getOrCreateOutputTexture(width: dstWidth, height: dstHeight) : scaleDst
         let image = makeImage(from: finalTex, width: dstWidth, height: dstHeight)
-        let wallTime = CACurrentMediaTime() - wallStart
 
-        return DownsampleOutput(image: image, processingTime: wallTime, gpuTime: gpuTime,
+        let tensor: [Float]? = image.map { cgImageToRGBTensor($0) }
+
+        let wallTime = CACurrentMediaTime() - wallStart
+        return DownsampleOutput(image: image, rgbTensor: tensor,
+                                processingTime: wallTime, gpuTime: gpuTime,
                                 outputWidth: dstWidth, outputHeight: dstHeight)
     }
 
@@ -218,15 +218,15 @@ final class MPSDownsampler: Downsampler {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(
             data: &pixelData, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: bytesPerRow,
-            space: colorSpace,
+            bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace,
             bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
         ) else { return nil }
         return context.makeImage()
     }
 
     private func fail(_ wallStart: TimeInterval) -> DownsampleOutput {
-        DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart,
+        DownsampleOutput(image: nil, rgbTensor: nil,
+                         processingTime: CACurrentMediaTime() - wallStart,
                          gpuTime: nil, outputWidth: 0, outputHeight: 0)
     }
 }

@@ -22,8 +22,7 @@ final class VImageDownsampler: Downsampler {
 
         if isYUVFormat(pixelBuffer) {
             guard let bgra = yuvConverter.convert(pixelBuffer) else {
-                return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
-                                        gpuTime: nil, outputWidth: 0, outputHeight: 0)
+                return fail(start)
             }
             srcBase = bgra.data
             srcWidth = bgra.width
@@ -34,8 +33,7 @@ final class VImageDownsampler: Downsampler {
             needsUnlock = true
             guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else {
                 CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
-                return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
-                                        gpuTime: nil, outputWidth: 0, outputHeight: 0)
+                return fail(start)
             }
             srcBase = base
             srcWidth = CVPixelBufferGetWidth(pixelBuffer)
@@ -57,8 +55,7 @@ final class VImageDownsampler: Downsampler {
         let dstBytesPerRow = scaleW * 4
         guard let dstData = malloc(scaleH * dstBytesPerRow) else {
             if needsUnlock { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
-                                    gpuTime: nil, outputWidth: 0, outputHeight: 0)
+            return fail(start)
         }
 
         var dstBuffer = vImage_Buffer(
@@ -82,10 +79,13 @@ final class VImageDownsampler: Downsampler {
         free(dstData)
         if needsUnlock { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
+        let tensor: [Float]? = image.map { cgImageToRGBTensor($0) }
+
         let outW = layout?.canvasWidth ?? scaleW
         let outH = layout?.canvasHeight ?? scaleH
         let elapsed = CACurrentMediaTime() - start
-        return DownsampleOutput(image: image, processingTime: elapsed, gpuTime: nil,
+        return DownsampleOutput(image: image, rgbTensor: tensor,
+                                processingTime: elapsed, gpuTime: nil,
                                 outputWidth: outW, outputHeight: outH)
     }
 
@@ -99,5 +99,11 @@ final class VImageDownsampler: Downsampler {
             bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
         ) else { return nil }
         return context.makeImage()
+    }
+
+    private func fail(_ start: TimeInterval) -> DownsampleOutput {
+        DownsampleOutput(image: nil, rgbTensor: nil,
+                         processingTime: CACurrentMediaTime() - start,
+                         gpuTime: nil, outputWidth: 0, outputHeight: 0)
     }
 }

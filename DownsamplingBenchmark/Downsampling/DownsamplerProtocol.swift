@@ -125,12 +125,42 @@ func letterboxComposite(innerImage: CGImage, layout: LetterboxLayout) -> CGImage
     return ctx.makeImage()
 }
 
+/// AI inference preprocessing final output format:
+/// - `image`: CGImage for UI display (BGRA uint8)
+/// - `rgbTensor`: Float32 RGB [H,W,3] normalized to [0,1] for model input
+/// - `processingTime`: End-to-end wall time from YUV input to tensor output
 struct DownsampleOutput {
     let image: CGImage?
+    let rgbTensor: [Float]?
     let processingTime: TimeInterval
     let gpuTime: TimeInterval?
     let outputWidth: Int
     let outputHeight: Int
+}
+
+/// Convert BGRA uint8 CGImage → Float32 RGB [H,W,3] tensor normalized to [0,1].
+/// Used by all non-Metal algorithms as the final conversion step.
+func cgImageToRGBTensor(_ image: CGImage) -> [Float] {
+    let w = image.width, h = image.height
+    let bpr = w * 4
+    var bgra = [UInt8](repeating: 0, count: h * bpr)
+    let cs = CGColorSpaceCreateDeviceRGB()
+    guard let ctx = CGContext(
+        data: &bgra, width: w, height: h,
+        bitsPerComponent: 8, bytesPerRow: bpr, space: cs,
+        bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+    ) else { return [] }
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+    let px = w * h
+    var tensor = [Float](repeating: 0, count: px * 3)
+    for i in 0..<px {
+        let off = i * 4
+        tensor[i * 3]     = Float(bgra[off + 2]) / 255.0
+        tensor[i * 3 + 1] = Float(bgra[off + 1]) / 255.0
+        tensor[i * 3 + 2] = Float(bgra[off])     / 255.0
+    }
+    return tensor
 }
 
 protocol Downsampler: AnyObject {

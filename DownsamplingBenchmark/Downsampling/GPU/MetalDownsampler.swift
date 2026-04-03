@@ -12,16 +12,13 @@ final class MetalDownsampler: Downsampler {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
 
-    // BGRA pipelines
     private let pipelineState: MTLComputePipelineState
     private let letterboxPipeline: MTLComputePipelineState
-
-    // YUV pipelines
     private let yuvPipeline: MTLComputePipelineState
     private let yuvLetterboxPipeline: MTLComputePipelineState
 
     private var textureCache: CVMetalTextureCache?
-    private var outputTexture: MTLTexture?
+    private var floatTexture: MTLTexture?
     private var lastOutputSize: (Int, Int) = (0, 0)
 
     init?() {
@@ -57,13 +54,11 @@ final class MetalDownsampler: Downsampler {
         let srcHeight = CVPixelBufferGetHeight(pixelBuffer)
         let (dstWidth, dstHeight) = target.outputSize(inputWidth: srcWidth, inputHeight: srcHeight)
 
-        guard let cache = textureCache else {
-            return fail(wallStart)
-        }
+        guard let cache = textureCache else { return fail(wallStart) }
 
         let isYUV = isYUVFormat(pixelBuffer)
         let layout = target.letterboxLayout(inputWidth: srcWidth, inputHeight: srcHeight)
-        let outTex = getOrCreateOutputTexture(width: dstWidth, height: dstHeight)
+        let outTex = getOrCreateFloatTexture(width: dstWidth, height: dstHeight)
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -75,7 +70,6 @@ final class MetalDownsampler: Downsampler {
                 encoder.endEncoding()
                 return fail(wallStart)
             }
-
             if let lb = layout {
                 encoder.setComputePipelineState(yuvLetterboxPipeline)
                 encoder.setTexture(yTex, index: 0)
@@ -96,7 +90,6 @@ final class MetalDownsampler: Downsampler {
                 encoder.endEncoding()
                 return fail(wallStart)
             }
-
             if let lb = layout {
                 encoder.setComputePipelineState(letterboxPipeline)
                 encoder.setTexture(inputTexture, index: 0)
@@ -111,13 +104,9 @@ final class MetalDownsampler: Downsampler {
             }
         }
 
-        let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
-        let threadgroupCount = MTLSize(
-            width: (dstWidth + 15) / 16,
-            height: (dstHeight + 15) / 16,
-            depth: 1
-        )
-        encoder.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
+        let tgs = MTLSize(width: 16, height: 16, depth: 1)
+        let tgc = MTLSize(width: (dstWidth + 15) / 16, height: (dstHeight + 15) / 16, depth: 1)
+        encoder.dispatchThreadgroups(tgc, threadsPerThreadgroup: tgs)
         encoder.endEncoding()
 
         var gpuStartTime: TimeInterval = 0
@@ -128,10 +117,28 @@ final class MetalDownsampler: Downsampler {
         commandBuffer.waitUntilCompleted()
 
         let gpuTime = gpuEndTime - gpuStartTime
-        let image = makeImage(from: outTex, width: dstWidth, height: dstHeight)
-        let wallTime = CACurrentMediaTime() - wallStart
 
-        return DownsampleOutput(image: image, processingTime: wallTime, gpuTime: gpuTime,
+        // Read back float RGBA data — no uint8 quantization, no extra conversion
+        let floatBytesPerRow = dstWidth * 16
+        var floatData = [Float](repeating: 0, count: dstWidth * dstHeight * 4)
+        outTex.getBytes(&floatData, bytesPerRow: floatBytesPerRow,
+                        from: MTLRegionMake2D(0, 0, dstWidth, dstHeight), mipmapLevel: 0)
+
+        // Extract RGB tensor directly from float RGBA (skip alpha channel)
+        let px = dstWidth * dstHeight
+        var tensor = [Float](repeating: 0, count: px * 3)
+        for i in 0..<px {
+            tensor[i * 3]     = floatData[i * 4]
+            tensor[i * 3 + 1] = floatData[i * 4 + 1]
+            tensor[i * 3 + 2] = floatData[i * 4 + 2]
+        }
+
+        // Derive display CGImage from float data (cheap at 416×416)
+        let image = makeImageFromFloat(floatData, width: dstWidth, height: dstHeight)
+
+        let wallTime = CACurrentMediaTime() - wallStart
+        return DownsampleOutput(image: image, rgbTensor: tensor,
+                                processingTime: wallTime, gpuTime: gpuTime,
                                 outputWidth: dstWidth, outputHeight: dstHeight)
     }
 
@@ -165,36 +172,45 @@ final class MetalDownsampler: Downsampler {
         return CVMetalTextureGetTexture(cv)
     }
 
-    private func getOrCreateOutputTexture(width: Int, height: Int) -> MTLTexture {
-        if let tex = outputTexture, lastOutputSize == (width, height) { return tex }
+    /// Float32 RGBA output texture — shader writes float precision, no uint8 quantization
+    private func getOrCreateFloatTexture(width: Int, height: Int) -> MTLTexture {
+        if let tex = floatTexture, lastOutputSize == (width, height) { return tex }
         let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
+            pixelFormat: .rgba32Float, width: width, height: height, mipmapped: false
         )
         desc.usage = [.shaderWrite, .shaderRead]
         let tex = device.makeTexture(descriptor: desc)!
-        outputTexture = tex
+        floatTexture = tex
         lastOutputSize = (width, height)
         return tex
     }
 
-    private func makeImage(from texture: MTLTexture, width: Int, height: Int) -> CGImage? {
+    /// Convert float RGBA data → CGImage for display
+    private func makeImageFromFloat(_ floatData: [Float], width: Int, height: Int) -> CGImage? {
         let bytesPerRow = width * 4
-        var pixelData = [UInt8](repeating: 0, count: bytesPerRow * height)
-        texture.getBytes(&pixelData, bytesPerRow: bytesPerRow,
-                         from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
-
+        var uint8Data = [UInt8](repeating: 0, count: height * bytesPerRow)
+        let count = width * height
+        for i in 0..<count {
+            let src = i * 4
+            let dst = i * 4
+            // Float RGBA → BGRA uint8 for CGContext
+            uint8Data[dst]     = UInt8(max(0, min(255, floatData[src + 2] * 255.0))) // B
+            uint8Data[dst + 1] = UInt8(max(0, min(255, floatData[src + 1] * 255.0))) // G
+            uint8Data[dst + 2] = UInt8(max(0, min(255, floatData[src]     * 255.0))) // R
+            uint8Data[dst + 3] = UInt8(max(0, min(255, floatData[src + 3] * 255.0))) // A
+        }
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(
-            data: &pixelData, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: bytesPerRow,
-            space: colorSpace,
+            data: &uint8Data, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace,
             bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
         ) else { return nil }
         return context.makeImage()
     }
 
     private func fail(_ wallStart: TimeInterval) -> DownsampleOutput {
-        DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart,
+        DownsampleOutput(image: nil, rgbTensor: nil,
+                         processingTime: CACurrentMediaTime() - wallStart,
                          gpuTime: nil, outputWidth: 0, outputHeight: 0)
     }
 }

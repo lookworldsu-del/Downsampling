@@ -21,8 +21,7 @@ final class CGContextDownsampler: Downsampler {
 
         if isYUVFormat(pixelBuffer) {
             guard let bgra = yuvConverter.convert(pixelBuffer) else {
-                return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
-                                        gpuTime: nil, outputWidth: 0, outputHeight: 0)
+                return fail(start)
             }
             srcBase = bgra.data
             srcWidth = bgra.width
@@ -33,8 +32,7 @@ final class CGContextDownsampler: Downsampler {
             needsUnlock = true
             guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else {
                 CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
-                return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
-                                        gpuTime: nil, outputWidth: 0, outputHeight: 0)
+                return fail(start)
             }
             srcBase = base
             srcWidth = CVPixelBufferGetWidth(pixelBuffer)
@@ -51,8 +49,7 @@ final class CGContextDownsampler: Downsampler {
             space: colorSpace, bitmapInfo: bitmapInfo
         ), let srcImage = srcContext.makeImage() else {
             if needsUnlock { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
-                                    gpuTime: nil, outputWidth: 0, outputHeight: 0)
+            return fail(start)
         }
 
         let (dstWidth, dstHeight) = target.outputSize(inputWidth: srcWidth, inputHeight: srcHeight)
@@ -64,8 +61,7 @@ final class CGContextDownsampler: Downsampler {
             space: colorSpace, bitmapInfo: bitmapInfo
         ) else {
             if needsUnlock { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
-                                    gpuTime: nil, outputWidth: 0, outputHeight: 0)
+            return fail(start)
         }
 
         dstContext.interpolationQuality = .high
@@ -80,8 +76,18 @@ final class CGContextDownsampler: Downsampler {
 
         let image = dstContext.makeImage()
         if needsUnlock { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        let tensor: [Float]? = image.map { cgImageToRGBTensor($0) }
+
         let elapsed = CACurrentMediaTime() - start
-        return DownsampleOutput(image: image, processingTime: elapsed, gpuTime: nil,
+        return DownsampleOutput(image: image, rgbTensor: tensor,
+                                processingTime: elapsed, gpuTime: nil,
                                 outputWidth: dstWidth, outputHeight: dstHeight)
+    }
+
+    private func fail(_ start: TimeInterval) -> DownsampleOutput {
+        DownsampleOutput(image: nil, rgbTensor: nil,
+                         processingTime: CACurrentMediaTime() - start,
+                         gpuTime: nil, outputWidth: 0, outputHeight: 0)
     }
 }

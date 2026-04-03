@@ -21,8 +21,7 @@ final class UIGraphicsDownsampler: Downsampler {
 
         if isYUVFormat(pixelBuffer) {
             guard let bgra = yuvConverter.convert(pixelBuffer) else {
-                return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
-                                        gpuTime: nil, outputWidth: 0, outputHeight: 0)
+                return fail(start)
             }
             srcBase = bgra.data
             srcWidth = bgra.width
@@ -33,8 +32,7 @@ final class UIGraphicsDownsampler: Downsampler {
             needsUnlock = true
             guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else {
                 CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
-                return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
-                                        gpuTime: nil, outputWidth: 0, outputHeight: 0)
+                return fail(start)
             }
             srcBase = base
             srcWidth = CVPixelBufferGetWidth(pixelBuffer)
@@ -50,8 +48,7 @@ final class UIGraphicsDownsampler: Downsampler {
             space: colorSpace, bitmapInfo: bitmapInfo
         ), let srcCGImage = srcContext.makeImage() else {
             if needsUnlock { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
-                                    gpuTime: nil, outputWidth: 0, outputHeight: 0)
+            return fail(start)
         }
 
         let srcImage = UIImage(cgImage: srcCGImage)
@@ -76,8 +73,19 @@ final class UIGraphicsDownsampler: Downsampler {
         }
 
         if needsUnlock { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        let cgImage = resultImage.cgImage
+        let tensor: [Float]? = cgImage.map { cgImageToRGBTensor($0) }
+
         let elapsed = CACurrentMediaTime() - start
-        return DownsampleOutput(image: resultImage.cgImage, processingTime: elapsed, gpuTime: nil,
+        return DownsampleOutput(image: cgImage, rgbTensor: tensor,
+                                processingTime: elapsed, gpuTime: nil,
                                 outputWidth: dstWidth, outputHeight: dstHeight)
+    }
+
+    private func fail(_ start: TimeInterval) -> DownsampleOutput {
+        DownsampleOutput(image: nil, rgbTensor: nil,
+                         processingTime: CACurrentMediaTime() - start,
+                         gpuTime: nil, outputWidth: 0, outputHeight: 0)
     }
 }
