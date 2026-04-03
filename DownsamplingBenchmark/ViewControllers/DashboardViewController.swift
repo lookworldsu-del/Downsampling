@@ -255,7 +255,7 @@ final class DashboardViewController: UIViewController {
 
     private func processFrame(_ pixelBuffer: CVPixelBuffer) {
         if let runner = fullRunner, runner.isRunning {
-            runner.collectFrame(pixelBuffer)
+            runner.processFrame(pixelBuffer)
             return
         }
 

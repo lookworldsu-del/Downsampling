@@ -321,7 +321,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 29RRD5KNP9;
+				DEVELOPMENT_TEAM = SF48M77QDN;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DownsamplingBenchmark/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "需要访问摄像头以进行实时 Downsampling 性能对比测试";
@@ -348,7 +348,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 29RRD5KNP9;
+				DEVELOPMENT_TEAM = SF48M77QDN;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DownsamplingBenchmark/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "需要访问摄像头以进行实时 Downsampling 性能对比测试";
