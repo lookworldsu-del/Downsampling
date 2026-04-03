@@ -42,7 +42,10 @@ final class CameraManager: NSObject {
         }
     }
 
+    private(set) var currentPreset: Preset = .hd1080p
+
     func configure(preset: Preset = .hd1080p) {
+        currentPreset = preset
         session.beginConfiguration()
         session.sessionPreset = preset.sessionPreset
 
@@ -74,6 +77,18 @@ final class CameraManager: NSObject {
         }
 
         session.commitConfiguration()
+    }
+
+    func switchPreset(_ preset: Preset, completion: @escaping () -> Void) {
+        currentPreset = preset
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            self.session.beginConfiguration()
+            self.session.sessionPreset = preset.sessionPreset
+            self.session.commitConfiguration()
+            Thread.sleep(forTimeInterval: 0.5)
+            DispatchQueue.main.async { completion() }
+        }
     }
 
     func start() {

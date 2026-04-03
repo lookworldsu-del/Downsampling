@@ -27,6 +27,14 @@ final class DashboardViewController: UIViewController {
     private var fullRunner: FullBenchmarkRunner?
     private var lastReport: FullBenchmarkReport?
 
+    // MARK: - Comprehensive Benchmark
+
+    private let comprehensiveButton = UIButton(type: .system)
+    private let comprehensiveExportButton = UIButton(type: .system)
+    private let comprehensiveProgressLabel = UILabel()
+    private var comprehensiveRunner: ComprehensiveBenchmarkRunner?
+    private var lastComprehensiveReport: ComprehensiveReport?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
@@ -153,6 +161,61 @@ final class DashboardViewController: UIViewController {
         exportButton.addTarget(self, action: #selector(exportJSON), for: .touchUpInside)
         exportButton.isHidden = true
         contentStack.addArrangedSubview(exportButton)
+
+        setupComprehensiveBenchmarkUI()
+    }
+
+    private func setupComprehensiveBenchmarkUI() {
+        let separator = UIView()
+        separator.backgroundColor = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        contentStack.addArrangedSubview(separator)
+
+        let titleLabel = UILabel()
+        titleLabel.text = "全配置跑分（1080p + 4K × 5 目标 × 6 算法）"
+        titleLabel.font = .systemFont(ofSize: 16, weight: .bold)
+        titleLabel.numberOfLines = 0
+        contentStack.addArrangedSubview(titleLabel)
+
+        let descLabel = UILabel()
+        descLabel.text = "60 次隔离跑分，自动切换分辨率和降采样目标\n算法间冷却 5s，分辨率切换冷却 8s\n预计耗时 ~8 分钟"
+        descLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        descLabel.textColor = .secondaryLabel
+        descLabel.numberOfLines = 0
+        contentStack.addArrangedSubview(descLabel)
+
+        comprehensiveButton.setTitle("  一键全量跑分", for: .normal)
+        comprehensiveButton.setImage(UIImage(systemName: "bolt.circle.fill"), for: .normal)
+        comprehensiveButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        comprehensiveButton.backgroundColor = .systemOrange
+        comprehensiveButton.setTitleColor(.white, for: .normal)
+        comprehensiveButton.tintColor = .white
+        comprehensiveButton.layer.cornerRadius = 10
+        comprehensiveButton.translatesAutoresizingMaskIntoConstraints = false
+        comprehensiveButton.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        comprehensiveButton.addTarget(self, action: #selector(startComprehensiveBenchmark), for: .touchUpInside)
+        contentStack.addArrangedSubview(comprehensiveButton)
+
+        comprehensiveProgressLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        comprehensiveProgressLabel.textColor = .secondaryLabel
+        comprehensiveProgressLabel.textAlignment = .center
+        comprehensiveProgressLabel.numberOfLines = 0
+        comprehensiveProgressLabel.isHidden = true
+        contentStack.addArrangedSubview(comprehensiveProgressLabel)
+
+        comprehensiveExportButton.setTitle("  复制全量 JSON 到剪贴板", for: .normal)
+        comprehensiveExportButton.setImage(UIImage(systemName: "doc.on.clipboard.fill"), for: .normal)
+        comprehensiveExportButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        comprehensiveExportButton.backgroundColor = .systemGreen
+        comprehensiveExportButton.setTitleColor(.white, for: .normal)
+        comprehensiveExportButton.tintColor = .white
+        comprehensiveExportButton.layer.cornerRadius = 10
+        comprehensiveExportButton.translatesAutoresizingMaskIntoConstraints = false
+        comprehensiveExportButton.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        comprehensiveExportButton.addTarget(self, action: #selector(exportComprehensiveJSON), for: .touchUpInside)
+        comprehensiveExportButton.isHidden = true
+        contentStack.addArrangedSubview(comprehensiveExportButton)
     }
 
     @objc private func startFullBenchmark() {
@@ -203,6 +266,116 @@ final class DashboardViewController: UIViewController {
         )
         alert.addAction(UIAlertAction(title: "好", style: .default))
         present(alert, animated: true)
+    }
+
+    // MARK: - Comprehensive Benchmark Actions
+
+    @objc private func startComprehensiveBenchmark() {
+        guard comprehensiveRunner == nil || !(comprehensiveRunner!.isRunning) else { return }
+        guard fullRunner == nil || !(fullRunner!.isRunning) else { return }
+
+        comprehensiveButton.isEnabled = false
+        comprehensiveButton.setTitle("  全量跑分中...", for: .normal)
+        comprehensiveButton.backgroundColor = .systemGray
+        fullBenchmarkButton.isEnabled = false
+        comprehensiveExportButton.isHidden = true
+        comprehensiveProgressLabel.isHidden = false
+        lastComprehensiveReport = nil
+
+        let runner = ComprehensiveBenchmarkRunner(
+            framesToCollect: 60,
+            cooldownSeconds: 5.0,
+            presetCooldownSeconds: 8.0
+        )
+
+        runner.onSwitchPreset = { [weak self] preset, completion in
+            guard let self else { return }
+            self.cameraManager.switchPreset(preset, completion: completion)
+        }
+
+        runner.onProgress = { [weak self] msg in
+            self?.comprehensiveProgressLabel.text = msg
+        }
+
+        runner.onComplete = { [weak self] report in
+            guard let self else { return }
+            self.lastComprehensiveReport = report
+            self.comprehensiveRunner = nil
+
+            self.comprehensiveButton.isEnabled = true
+            self.comprehensiveButton.setTitle("  重新全量跑分", for: .normal)
+            self.comprehensiveButton.backgroundColor = .systemOrange
+            self.fullBenchmarkButton.isEnabled = true
+
+            let cfgCount = report.configurations.count
+            let algoCount = report.totalAlgorithmRuns
+            self.comprehensiveProgressLabel.text = "全量跑分完成！\(cfgCount) 组配置 × \(algoCount) 次算法测试\n总耗时: \(String(format: "%.0f", report.totalDurationSeconds)) 秒"
+            self.comprehensiveExportButton.isHidden = false
+
+            self.showComprehensiveSummary(report)
+
+            self.loadSettings()
+        }
+
+        comprehensiveRunner = runner
+        runner.start()
+    }
+
+    @objc private func exportComprehensiveJSON() {
+        guard let report = lastComprehensiveReport,
+              let json = ComprehensiveBenchmarkRunner.reportToJSON(report) else { return }
+
+        UIPasteboard.general.string = json
+
+        let alert = UIAlertController(
+            title: "已复制到剪贴板",
+            message: "全量跑分 JSON（\(json.count) 字符，\(report.configurations.count) 组配置）已复制。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
+    }
+
+    private func showComprehensiveSummary(_ report: ComprehensiveReport) {
+        let existingCards = contentStack.arrangedSubviews.filter { $0.tag == 888 }
+        existingCards.forEach { $0.removeFromSuperview() }
+
+        let thermalNames = ["正常", "微热", "过热", "严重"]
+        func thermalName(_ v: Int) -> String { v < thermalNames.count ? thermalNames[v] : "未知" }
+
+        let summaryCard = MetricCardView()
+        summaryCard.tag = 888
+        summaryCard.titleText = "📊 全量跑分总览"
+        var lines = [
+            String(format: "总耗时: %.0f 秒 (%.1f 分钟)  |  %d 组配置 × %d 次测试",
+                   report.totalDurationSeconds, report.totalDurationSeconds / 60,
+                   report.configurations.count, report.totalAlgorithmRuns),
+            "热状态: \(thermalName(report.thermalStateBefore)) → \(thermalName(report.thermalStateAfter))  |  峰值: \(thermalName(report.peakThermalState))",
+            String(format: "电量: %.0f%% → %.0f%%  |  消耗: %.1f%%",
+                   report.batteryBefore, report.batteryAfter, report.batteryDrainPercent),
+            String(format: "CPU 总做功: %.2f CPU-seconds", report.cpuEnergyScore),
+        ]
+        if report.estimatedPowerMW > 0 {
+            lines.append(String(format: "估算功耗: %.0f mW (%.2f W)", report.estimatedPowerMW, report.estimatedPowerMW / 1000))
+        }
+        summaryCard.setDetail(lines.joined(separator: "\n"))
+        contentStack.addArrangedSubview(summaryCard)
+
+        for cfg in report.configurations {
+            let cfgCard = MetricCardView()
+            cfgCard.tag = 888
+            cfgCard.titleText = "📋 \(cfg.capturePreset) → \(cfg.scaleFactor)"
+
+            var cfgLines: [String] = []
+            let sortedResults = cfg.results.sorted { $0.avgTime < $1.avgTime }
+            for (i, r) in sortedResults.enumerated() {
+                let medal = i == 0 ? "🥇" : i == 1 ? "🥈" : i == 2 ? "🥉" : "  "
+                cfgLines.append(String(format: "%@ %@ — %.2f ms / %.0f FPS (CPU:%.0f%% MEM:%.0fMB)",
+                                       medal, r.name, r.avgTime, r.fps, r.avgCPU, r.peakMemory))
+            }
+            cfgCard.setDetail(cfgLines.joined(separator: "\n"))
+            contentStack.addArrangedSubview(cfgCard)
+        }
     }
 
     private func showResultsSummary(_ report: FullBenchmarkReport) {
@@ -281,6 +454,11 @@ final class DashboardViewController: UIViewController {
     }
 
     private func processFrame(_ pixelBuffer: CVPixelBuffer) {
+        if let runner = comprehensiveRunner, runner.isRunning {
+            runner.processFrame(pixelBuffer)
+            return
+        }
+
         if let runner = fullRunner, runner.isRunning {
             runner.processFrame(pixelBuffer)
             return
