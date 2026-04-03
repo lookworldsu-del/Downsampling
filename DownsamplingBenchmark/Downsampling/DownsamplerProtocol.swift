@@ -1,6 +1,7 @@
 import CoreVideo
 import CoreGraphics
 import Metal
+import Accelerate
 
 enum DownsamplerType: String, CaseIterable {
     case cpu = "CPU"
@@ -137,4 +138,91 @@ protocol Downsampler: AnyObject {
     var name: String { get }
     var type: DownsamplerType { get }
     func downsample(_ pixelBuffer: CVPixelBuffer, target: DownsampleTarget) -> DownsampleOutput
+}
+
+// MARK: - YUV→BGRA Conversion Utility (for CPU downsamplers)
+
+final class YUVConverter {
+
+    struct BGRABuffer {
+        let data: UnsafeMutableRawPointer
+        let width: Int
+        let height: Int
+        let bytesPerRow: Int
+    }
+
+    private var conversionInfo = vImage_YpCbCrToARGB()
+    private var infoReady = false
+    private var bgraData: UnsafeMutableRawPointer?
+    private var cachedWidth = 0
+    private var cachedHeight = 0
+
+    deinit {
+        if let d = bgraData { free(d) }
+    }
+
+    func convert(_ pixelBuffer: CVPixelBuffer) -> BGRABuffer? {
+        let fmt = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        guard fmt == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
+              fmt == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange else {
+            return nil
+        }
+
+        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+
+        if !infoReady {
+            var pixelRange = vImage_YpCbCrPixelRange(
+                Yp_bias: 0, CbCr_bias: 128,
+                YpRangeMax: 255, CbCrRangeMax: 255,
+                YpMax: 255, YpMin: 0, CbCrMax: 255, CbCrMin: 0
+            )
+            vImageConvert_YpCbCrToARGB_GenerateConversion(
+                kvImage_YpCbCrToARGBMatrix_ITU_R_601_4,
+                &pixelRange, &conversionInfo,
+                kvImage420Yp8_CbCr8, kvImageARGB8888,
+                vImage_Flags(kvImageNoFlags)
+            )
+            infoReady = true
+        }
+
+        let bytesPerRow = width * 4
+        if cachedWidth != width || cachedHeight != height {
+            if let old = bgraData { free(old) }
+            bgraData = malloc(height * bytesPerRow)
+            cachedWidth = width
+            cachedHeight = height
+        }
+        guard let dst = bgraData else { return nil }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        guard let yBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+              let uvBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1) else { return nil }
+
+        let yBPR = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        let uvBPR = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+
+        var yBuf = vImage_Buffer(data: yBase, height: vImagePixelCount(height),
+                                 width: vImagePixelCount(width), rowBytes: yBPR)
+        var uvBuf = vImage_Buffer(data: uvBase, height: vImagePixelCount(height / 2),
+                                  width: vImagePixelCount(width / 2), rowBytes: uvBPR)
+        var dstBuf = vImage_Buffer(data: dst, height: vImagePixelCount(height),
+                                   width: vImagePixelCount(width), rowBytes: bytesPerRow)
+
+        var permuteMap: [UInt8] = [3, 2, 1, 0]
+        vImageConvert_420Yp8_CbCr8ToARGB8888(
+            &yBuf, &uvBuf, &dstBuf, &conversionInfo,
+            &permuteMap, 255, vImage_Flags(kvImageNoFlags)
+        )
+
+        return BGRABuffer(data: dst, width: width, height: height, bytesPerRow: bytesPerRow)
+    }
+}
+
+func isYUVFormat(_ pixelBuffer: CVPixelBuffer) -> Bool {
+    let fmt = CVPixelBufferGetPixelFormatType(pixelBuffer)
+    return fmt == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
+           fmt == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
 }

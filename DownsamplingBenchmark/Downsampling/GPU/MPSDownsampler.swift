@@ -12,26 +12,32 @@ final class MPSDownsampler: Downsampler {
 
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
+    private let yuvConvertPipeline: MTLComputePipelineState
     private var textureCache: CVMetalTextureCache?
 
     private var outputTexture: MTLTexture?
     private var lastOutputSize: (Int, Int) = (0, 0)
+    private var innerTexture: MTLTexture?
+    private var lastInnerSize: (Int, Int) = (0, 0)
+    private var fullResBGRATexture: MTLTexture?
+    private var lastFullResSize: (Int, Int) = (0, 0)
 
     init?() {
         guard let device = MTLCreateSystemDefaultDevice(),
-              let queue = device.makeCommandQueue()
+              let queue = device.makeCommandQueue(),
+              let library = device.makeDefaultLibrary(),
+              let fn = library.makeFunction(name: "yuv_to_bgra"),
+              let pipeline = try? device.makeComputePipelineState(function: fn)
         else { return nil }
 
         self.device = device
         self.commandQueue = queue
+        self.yuvConvertPipeline = pipeline
 
         var cache: CVMetalTextureCache?
         CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
         self.textureCache = cache
     }
-
-    private var innerTexture: MTLTexture?
-    private var lastInnerSize: (Int, Int) = (0, 0)
 
     func downsample(_ pixelBuffer: CVPixelBuffer, target: DownsampleTarget) -> DownsampleOutput {
         let wallStart = CACurrentMediaTime()
@@ -41,19 +47,40 @@ final class MPSDownsampler: Downsampler {
         let (dstWidth, dstHeight) = target.outputSize(inputWidth: srcWidth, inputHeight: srcHeight)
         let layout = target.letterboxLayout(inputWidth: srcWidth, inputHeight: srcHeight)
 
-        guard let cache = textureCache else {
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
+        guard let cache = textureCache else { return fail(wallStart) }
+
+        let isYUV = isYUVFormat(pixelBuffer)
+
+        // Step 1: Get or create a BGRA source texture for MPS
+        let bgraSource: MTLTexture
+        if isYUV {
+            guard let (yTex, uvTex) = makeYUVTextures(pixelBuffer: pixelBuffer, cache: cache) else {
+                return fail(wallStart)
+            }
+            let fullRes = getOrCreateFullResBGRA(width: srcWidth, height: srcHeight)
+
+            guard let cb = commandQueue.makeCommandBuffer(),
+                  let enc = cb.makeComputeCommandEncoder() else { return fail(wallStart) }
+            enc.setComputePipelineState(yuvConvertPipeline)
+            enc.setTexture(yTex, index: 0)
+            enc.setTexture(uvTex, index: 1)
+            enc.setTexture(fullRes, index: 2)
+            let tgs = MTLSize(width: 16, height: 16, depth: 1)
+            let tgc = MTLSize(width: (srcWidth + 15) / 16, height: (srcHeight + 15) / 16, depth: 1)
+            enc.dispatchThreadgroups(tgc, threadsPerThreadgroup: tgs)
+            enc.endEncoding()
+            cb.commit()
+            cb.waitUntilCompleted()
+            bgraSource = fullRes
+        } else {
+            var cvTex: CVMetalTexture?
+            CVMetalTextureCacheCreateTextureFromImage(nil, cache, pixelBuffer, nil,
+                                                      .bgra8Unorm, srcWidth, srcHeight, 0, &cvTex)
+            guard let cv = cvTex, let tex = CVMetalTextureGetTexture(cv) else { return fail(wallStart) }
+            bgraSource = tex
         }
 
-        var cvTexture: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(
-            nil, cache, pixelBuffer, nil,
-            .bgra8Unorm, srcWidth, srcHeight, 0, &cvTexture
-        )
-        guard let cvTex = cvTexture, let inputTexture = CVMetalTextureGetTexture(cvTex) else {
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
-        }
-
+        // Step 2: MPS bilinear scale
         let scaleTargetW: Int
         let scaleTargetH: Int
         if let lb = layout {
@@ -74,18 +101,16 @@ final class MPSDownsampler: Downsampler {
         let scaleX = Double(scaleTargetW) / Double(srcWidth)
         let scaleY = Double(scaleTargetH) / Double(srcHeight)
         var transform = MPSScaleTransform(scaleX: scaleX, scaleY: scaleY, translateX: 0, translateY: 0)
-
         let bilinearScale = MPSImageBilinearScale(device: device)
 
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
-        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return fail(wallStart) }
 
         withUnsafePointer(to: &transform) { ptr in
             bilinearScale.scaleTransform = ptr
-            bilinearScale.encode(commandBuffer: commandBuffer, sourceTexture: inputTexture, destinationTexture: scaleDst)
+            bilinearScale.encode(commandBuffer: commandBuffer, sourceTexture: bgraSource, destinationTexture: scaleDst)
         }
 
+        // Step 3: Letterbox compositing
         if let lb = layout {
             let outTex = getOrCreateOutputTexture(width: dstWidth, height: dstHeight)
 
@@ -113,14 +138,8 @@ final class MPSDownsampler: Downsampler {
 
         var gpuStartTime: TimeInterval = 0
         var gpuEndTime: TimeInterval = 0
-
-        commandBuffer.addScheduledHandler { _ in
-            gpuStartTime = CACurrentMediaTime()
-        }
-        commandBuffer.addCompletedHandler { _ in
-            gpuEndTime = CACurrentMediaTime()
-        }
-
+        commandBuffer.addScheduledHandler { _ in gpuStartTime = CACurrentMediaTime() }
+        commandBuffer.addCompletedHandler { _ in gpuEndTime = CACurrentMediaTime() }
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
 
@@ -129,13 +148,45 @@ final class MPSDownsampler: Downsampler {
         let image = makeImage(from: finalTex, width: dstWidth, height: dstHeight)
         let wallTime = CACurrentMediaTime() - wallStart
 
-        return DownsampleOutput(image: image, processingTime: wallTime, gpuTime: gpuTime, outputWidth: dstWidth, outputHeight: dstHeight)
+        return DownsampleOutput(image: image, processingTime: wallTime, gpuTime: gpuTime,
+                                outputWidth: dstWidth, outputHeight: dstHeight)
+    }
+
+    // MARK: - Texture helpers
+
+    private func makeYUVTextures(pixelBuffer: CVPixelBuffer, cache: CVMetalTextureCache) -> (MTLTexture, MTLTexture)? {
+        let yW = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+        let yH = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+        let uvW = CVPixelBufferGetWidthOfPlane(pixelBuffer, 1)
+        let uvH = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
+
+        var yCV: CVMetalTexture?
+        CVMetalTextureCacheCreateTextureFromImage(nil, cache, pixelBuffer, nil,
+                                                  .r8Unorm, yW, yH, 0, &yCV)
+        var uvCV: CVMetalTexture?
+        CVMetalTextureCacheCreateTextureFromImage(nil, cache, pixelBuffer, nil,
+                                                  .rg8Unorm, uvW, uvH, 1, &uvCV)
+
+        guard let y = yCV, let uv = uvCV,
+              let yTex = CVMetalTextureGetTexture(y),
+              let uvTex = CVMetalTextureGetTexture(uv) else { return nil }
+        return (yTex, uvTex)
+    }
+
+    private func getOrCreateFullResBGRA(width: Int, height: Int) -> MTLTexture {
+        if let tex = fullResBGRATexture, lastFullResSize == (width, height) { return tex }
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
+        )
+        desc.usage = [.shaderWrite, .shaderRead]
+        let tex = device.makeTexture(descriptor: desc)!
+        fullResBGRATexture = tex
+        lastFullResSize = (width, height)
+        return tex
     }
 
     private func getOrCreateInnerTexture(width: Int, height: Int) -> MTLTexture {
-        if let tex = innerTexture, lastInnerSize == (width, height) {
-            return tex
-        }
+        if let tex = innerTexture, lastInnerSize == (width, height) { return tex }
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
         )
@@ -147,15 +198,9 @@ final class MPSDownsampler: Downsampler {
     }
 
     private func getOrCreateOutputTexture(width: Int, height: Int) -> MTLTexture {
-        if let tex = outputTexture, lastOutputSize == (width, height) {
-            return tex
-        }
-
+        if let tex = outputTexture, lastOutputSize == (width, height) { return tex }
         let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm,
-            width: width,
-            height: height,
-            mipmapped: false
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
         )
         desc.usage = [.shaderWrite, .shaderRead]
         let tex = device.makeTexture(descriptor: desc)!
@@ -166,23 +211,22 @@ final class MPSDownsampler: Downsampler {
 
     private func makeImage(from texture: MTLTexture, width: Int, height: Int) -> CGImage? {
         let bytesPerRow = width * 4
-        let totalBytes = bytesPerRow * height
-        var pixelData = [UInt8](repeating: 0, count: totalBytes)
-
+        var pixelData = [UInt8](repeating: 0, count: bytesPerRow * height)
         texture.getBytes(&pixelData, bytesPerRow: bytesPerRow,
                          from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(
-            data: &pixelData,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
+            data: &pixelData, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: bytesPerRow,
             space: colorSpace,
             bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
         ) else { return nil }
-
         return context.makeImage()
+    }
+
+    private func fail(_ wallStart: TimeInterval) -> DownsampleOutput {
+        DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart,
+                         gpuTime: nil, outputWidth: 0, outputHeight: 0)
     }
 }

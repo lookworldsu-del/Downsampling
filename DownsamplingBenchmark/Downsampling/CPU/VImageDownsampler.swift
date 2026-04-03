@@ -9,17 +9,38 @@ final class VImageDownsampler: Downsampler {
     let name = "vImage (Accelerate)"
     let type: DownsamplerType = .cpu
 
+    private let yuvConverter = YUVConverter()
+
     func downsample(_ pixelBuffer: CVPixelBuffer, target: DownsampleTarget) -> DownsampleOutput {
         let start = CACurrentMediaTime()
 
-        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        let srcBase: UnsafeMutableRawPointer
+        let srcWidth: Int
+        let srcHeight: Int
+        let srcBytesPerRow: Int
+        var needsUnlock = false
 
-        let srcWidth = CVPixelBufferGetWidth(pixelBuffer)
-        let srcHeight = CVPixelBufferGetHeight(pixelBuffer)
-        let srcBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        guard let srcBase = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start, gpuTime: nil, outputWidth: 0, outputHeight: 0)
+        if isYUVFormat(pixelBuffer) {
+            guard let bgra = yuvConverter.convert(pixelBuffer) else {
+                return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
+                                        gpuTime: nil, outputWidth: 0, outputHeight: 0)
+            }
+            srcBase = bgra.data
+            srcWidth = bgra.width
+            srcHeight = bgra.height
+            srcBytesPerRow = bgra.bytesPerRow
+        } else {
+            CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+            needsUnlock = true
+            guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+                CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+                return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
+                                        gpuTime: nil, outputWidth: 0, outputHeight: 0)
+            }
+            srcBase = base
+            srcWidth = CVPixelBufferGetWidth(pixelBuffer)
+            srcHeight = CVPixelBufferGetHeight(pixelBuffer)
+            srcBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
         }
 
         let layout = target.letterboxLayout(inputWidth: srcWidth, inputHeight: srcHeight)
@@ -35,7 +56,9 @@ final class VImageDownsampler: Downsampler {
 
         let dstBytesPerRow = scaleW * 4
         guard let dstData = malloc(scaleH * dstBytesPerRow) else {
-            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start, gpuTime: nil, outputWidth: 0, outputHeight: 0)
+            if needsUnlock { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+            return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start,
+                                    gpuTime: nil, outputWidth: 0, outputHeight: 0)
         }
 
         var dstBuffer = vImage_Buffer(
@@ -57,21 +80,21 @@ final class VImageDownsampler: Downsampler {
         }
 
         free(dstData)
+        if needsUnlock { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
         let outW = layout?.canvasWidth ?? scaleW
         let outH = layout?.canvasHeight ?? scaleH
         let elapsed = CACurrentMediaTime() - start
-        return DownsampleOutput(image: image, processingTime: elapsed, gpuTime: nil, outputWidth: outW, outputHeight: outH)
+        return DownsampleOutput(image: image, processingTime: elapsed, gpuTime: nil,
+                                outputWidth: outW, outputHeight: outH)
     }
 
     private func createCGImage(from buffer: inout vImage_Buffer, width: Int, height: Int, bytesPerRow: Int) -> CGImage? {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(
             data: buffer.data,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
+            width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: bytesPerRow,
             space: colorSpace,
             bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
         ) else { return nil }
