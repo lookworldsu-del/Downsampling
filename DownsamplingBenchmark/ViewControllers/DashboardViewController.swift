@@ -209,6 +209,26 @@ final class DashboardViewController: UIViewController {
         let existingCards = contentStack.arrangedSubviews.filter { $0.tag == 999 }
         existingCards.forEach { $0.removeFromSuperview() }
 
+        let thermalNames = ["正常", "微热", "过热", "严重"]
+        func thermalName(_ v: Int) -> String { v < thermalNames.count ? thermalNames[v] : "未知" }
+
+        let powerCard = MetricCardView()
+        powerCard.tag = 999
+        powerCard.titleText = "🌡️ 热力 & 功耗（隔离模式，冷却 \(Int(report.cooldownSeconds))s）"
+        var powerLines = [
+            String(format: "总耗时: %.1f 秒（含冷却）  |  每算法 %d 帧", report.durationSeconds, report.frameCount),
+            "热状态: \(thermalName(report.thermalStateBefore)) → \(thermalName(report.thermalStateAfter))  |  峰值: \(thermalName(report.peakThermalState))",
+            String(format: "电量: %.0f%% → %.0f%%  |  消耗: %.2f%%", report.batteryBefore, report.batteryAfter, report.batteryDrainPercent),
+            String(format: "CPU 做功量: %.2f CPU-seconds", report.cpuEnergyScore),
+        ]
+        if report.estimatedPowerMW > 0 {
+            powerLines.append(String(format: "估算功耗: %.0f mW (%.2f W)", report.estimatedPowerMW, report.estimatedPowerMW / 1000))
+        } else {
+            powerLines.append("估算功耗: 电量变化不足 1%，无法精确计算")
+        }
+        powerCard.setDetail(powerLines.joined(separator: "\n"))
+        contentStack.addArrangedSubview(powerCard)
+
         for r in report.results {
             let card = MetricCardView()
             card.tag = 999
@@ -216,7 +236,9 @@ final class DashboardViewController: UIViewController {
             let lines = [
                 String(format: "平均: %.2f ms  |  最小: %.2f ms  |  最大: %.2f ms", r.avgTime, r.minTime, r.maxTime),
                 String(format: "P99: %.2f ms  |  方差: %.4f  |  FPS: %.1f", r.p99Time, r.variance, r.fps),
-                String(format: "CPU占用: %.1f%%  |  峰值内存: %.1f MB", r.avgCPU, r.peakMemory),
+                String(format: "CPU: %.1f%%  |  内存: %.1f MB  |  耗时: %.1fs", r.avgCPU, r.peakMemory, r.durationSeconds),
+                "热: \(thermalName(r.thermalBefore))→\(thermalName(r.thermalAfter)) (峰值:\(thermalName(r.peakThermalState)))  |  " +
+                String(format: "电量: %.0f%%→%.0f%%", r.batteryBefore, r.batteryAfter),
             ]
             card.setDetail(lines.joined(separator: "\n"))
             contentStack.addArrangedSubview(card)

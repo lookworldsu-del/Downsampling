@@ -36,6 +36,9 @@ struct AggregatedMetrics {
 }
 
 extension ProcessInfo.ThermalState {
+    /// 0=nominal, 1=fair, 2=serious, 3=critical
+    var numericValue: Int { rawValue }
+
     var displayName: String {
         switch self {
         case .nominal:  return "正常"
@@ -53,6 +56,17 @@ extension ProcessInfo.ThermalState {
         case .serious:  return "🟠"
         case .critical: return "🔴"
         @unknown default: return "⚪"
+        }
+    }
+
+    /// Apple 未公开具体温度阈值，以下为社区测量的近似范围
+    var estimatedTempRange: String {
+        switch self {
+        case .nominal:  return "< 35°C"
+        case .fair:     return "35~40°C"
+        case .serious:  return "40~45°C"
+        case .critical: return "> 45°C (降频)"
+        @unknown default: return "未知"
         }
     }
 }

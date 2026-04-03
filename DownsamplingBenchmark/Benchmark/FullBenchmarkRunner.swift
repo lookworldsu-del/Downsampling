@@ -14,6 +14,20 @@ struct AlgorithmResult: Codable {
     let avgCPU: Double
     let peakMemory: Double
     let frameCount: Int
+    let peakThermalState: Int
+    let thermalBefore: Int
+    let thermalAfter: Int
+    let batteryBefore: Double
+    let batteryAfter: Double
+    let durationSeconds: Double
+}
+
+struct ThermalSnapshot: Codable {
+    let frameIndex: Int
+    let thermalState: Int
+    let batteryLevel: Double
+    let timestamp: Double
+    let algorithmIndex: Int
 }
 
 struct FullBenchmarkReport: Codable {
@@ -23,29 +37,71 @@ struct FullBenchmarkReport: Codable {
     let scaleFactor: String
     let frameCount: Int
     let date: String
+    let isolatedMode: Bool
+    let cooldownSeconds: Double
     let results: [AlgorithmResult]
+
+    let thermalStateBefore: Int
+    let thermalStateAfter: Int
+    let peakThermalState: Int
+    let batteryBefore: Double
+    let batteryAfter: Double
+    let batteryDrainPercent: Double
+    let durationSeconds: Double
+    let estimatedPowerMW: Double
+    let cpuEnergyScore: Double
+    let thermalTimeline: [ThermalSnapshot]
 }
 
+// MARK: - Isolated Benchmark Runner
+
 final class FullBenchmarkRunner {
+
+    private enum Phase {
+        case idle
+        case running(algorithmIndex: Int)
+        case cooling(nextAlgorithmIndex: Int, startTime: TimeInterval)
+        case done
+    }
 
     private let allDownsamplers: [Downsampler]
     private let framesToCollect: Int
     private let target: DownsampleTarget
+    private let cooldownDuration: TimeInterval
 
-    private var collectedFrames: Int = 0
-    private var timings: [[Double]] = []
-    private var cpuUsages: [[Double]] = []
-    private var peakMemories: [UInt64] = []
+    private var phase: Phase = .idle
+    private var captureSize: String = "unknown"
+
+    // Per-algorithm isolated data
+    private var currentFrameCount: Int = 0
+    private var currentTimings: [Double] = []
+    private var currentCPUUsages: [Double] = []
+    private var currentPeakMemory: UInt64 = 0
+    private var currentThermalPeak: Int = 0
+    private var algorithmStartTime: TimeInterval = 0
+    private var algorithmStartBattery: Float = 0
+    private var algorithmStartThermal: Int = 0
+
+    // Accumulated results
+    private var completedResults: [AlgorithmResult] = []
+
+    // Global tracking
+    private var benchmarkStartTime: TimeInterval = 0
+    private var globalStartBattery: Float = -1
+    private var globalStartThermal: Int = 0
+    private var thermalTimeline: [ThermalSnapshot] = []
+    private var lastSampledThermal: Int = -1
+    private var totalCPUSeconds: Double = 0
 
     private(set) var isRunning = false
-    private var captureSize: String = "unknown"
 
     var onProgress: ((String) -> Void)?
     var onComplete: ((FullBenchmarkReport) -> Void)?
 
-    init(target: DownsampleTarget, framesToCollect: Int = 60) {
+    init(target: DownsampleTarget, framesToCollect: Int = 60, cooldownSeconds: TimeInterval = 3.0) {
         self.target = target
         self.framesToCollect = framesToCollect
+        self.cooldownDuration = cooldownSeconds
 
         var downsamplers: [Downsampler] = [
             VImageDownsampler(),
@@ -62,84 +118,193 @@ final class FullBenchmarkRunner {
     func start() {
         guard !isRunning else { return }
         isRunning = true
-        collectedFrames = 0
+
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        benchmarkStartTime = CACurrentMediaTime()
+        globalStartBattery = UIDevice.current.batteryLevel
+        globalStartThermal = ProcessInfo.processInfo.thermalState.rawValue
+        thermalTimeline = []
+        lastSampledThermal = -1
+        completedResults = []
+        totalCPUSeconds = 0
         captureSize = "unknown"
 
-        let count = allDownsamplers.count
-        timings = Array(repeating: [], count: count)
-        cpuUsages = Array(repeating: [], count: count)
-        peakMemories = Array(repeating: 0, count: count)
-
-        DispatchQueue.main.async { [weak self] in
-            self?.onProgress?("跑分中: 0/\(self?.framesToCollect ?? 0)")
-        }
+        beginAlgorithm(index: 0)
     }
 
-    /// Process one frame through all algorithms immediately — no pixel buffer storage.
     func processFrame(_ pixelBuffer: CVPixelBuffer) {
-        guard isRunning, collectedFrames < framesToCollect else { return }
+        guard isRunning else { return }
 
         if captureSize == "unknown" {
-            let w = CVPixelBufferGetWidth(pixelBuffer)
-            let h = CVPixelBufferGetHeight(pixelBuffer)
-            captureSize = "\(w)x\(h)"
+            captureSize = "\(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer))"
         }
 
-        for (i, ds) in allDownsamplers.enumerated() {
-            let cpuBefore = BenchmarkEngine.currentCPUUsage()
-            let output = ds.downsample(pixelBuffer, target: target)
-            let cpuAfter = BenchmarkEngine.currentCPUUsage()
+        switch phase {
+        case .idle, .done:
+            return
 
-            timings[i].append(output.processingTime * 1000)
-            cpuUsages[i].append((cpuBefore + cpuAfter) / 2.0)
+        case .cooling(let nextIdx, let startTime):
+            let elapsed = CACurrentMediaTime() - startTime
+            if elapsed >= cooldownDuration {
+                beginAlgorithm(index: nextIdx)
+                runFrame(algorithmIndex: nextIdx, pixelBuffer: pixelBuffer)
+            } else {
+                let remaining = ceil(cooldownDuration - elapsed)
+                let nextName = allDownsamplers[nextIdx].name
+                let total = allDownsamplers.count
+                DispatchQueue.main.async { [weak self] in
+                    self?.onProgress?("⏸ 冷却中 \(Int(remaining))s → [\(nextIdx + 1)/\(total)] \(nextName)")
+                }
+            }
 
-            let mem = BenchmarkEngine.currentMemoryUsage()
-            if mem > peakMemories[i] { peakMemories[i] = mem }
-        }
-
-        collectedFrames += 1
-
-        let current = collectedFrames
-        let total = framesToCollect
-        DispatchQueue.main.async { [weak self] in
-            self?.onProgress?("跑分中: \(current)/\(total)")
-        }
-
-        if collectedFrames >= framesToCollect {
-            finalize()
+        case .running(let algIdx):
+            runFrame(algorithmIndex: algIdx, pixelBuffer: pixelBuffer)
         }
     }
 
-    private func finalize() {
+    // MARK: - Algorithm Lifecycle
+
+    private func beginAlgorithm(index: Int) {
+        currentFrameCount = 0
+        currentTimings = []
+        currentCPUUsages = []
+        currentPeakMemory = 0
+        currentThermalPeak = 0
+        algorithmStartTime = CACurrentMediaTime()
+        algorithmStartBattery = UIDevice.current.batteryLevel
+        algorithmStartThermal = ProcessInfo.processInfo.thermalState.rawValue
+
+        phase = .running(algorithmIndex: index)
+
+        let name = allDownsamplers[index].name
+        let total = allDownsamplers.count
+        DispatchQueue.main.async { [weak self] in
+            self?.onProgress?("▶ [\(index + 1)/\(total)] \(name) - 0/\(self?.framesToCollect ?? 0)")
+        }
+    }
+
+    private func runFrame(algorithmIndex algIdx: Int, pixelBuffer: CVPixelBuffer) {
+        guard currentFrameCount < framesToCollect else { return }
+
+        let ds = allDownsamplers[algIdx]
+
+        // Sample thermal state
+        let thermal = ProcessInfo.processInfo.thermalState.rawValue
+        if thermal != lastSampledThermal || thermalTimeline.isEmpty {
+            thermalTimeline.append(ThermalSnapshot(
+                frameIndex: currentFrameCount,
+                thermalState: thermal,
+                batteryLevel: Double(UIDevice.current.batteryLevel),
+                timestamp: CACurrentMediaTime() - benchmarkStartTime,
+                algorithmIndex: algIdx
+            ))
+            lastSampledThermal = thermal
+        }
+
+        let cpuBefore = BenchmarkEngine.currentCPUUsage()
+        let output = ds.downsample(pixelBuffer, target: target)
+        let cpuAfter = BenchmarkEngine.currentCPUUsage()
+
+        let timeMs = output.processingTime * 1000
+        let avgCPU = (cpuBefore + cpuAfter) / 2.0
+        currentTimings.append(timeMs)
+        currentCPUUsages.append(avgCPU)
+        totalCPUSeconds += (avgCPU / 100.0) * output.processingTime
+
+        let mem = BenchmarkEngine.currentMemoryUsage()
+        if mem > currentPeakMemory { currentPeakMemory = mem }
+        if thermal > currentThermalPeak { currentThermalPeak = thermal }
+
+        currentFrameCount += 1
+
+        let name = ds.name
+        let total = allDownsamplers.count
+        let frame = currentFrameCount
+        let target = framesToCollect
+        DispatchQueue.main.async { [weak self] in
+            self?.onProgress?("▶ [\(algIdx + 1)/\(total)] \(name) - \(frame)/\(target)")
+        }
+
+        if currentFrameCount >= framesToCollect {
+            finalizeAlgorithm(index: algIdx)
+        }
+    }
+
+    private func finalizeAlgorithm(index: Int) {
+        let ds = allDownsamplers[index]
+        let now = CACurrentMediaTime()
+
+        let sorted = currentTimings.sorted()
+        let avg = currentTimings.reduce(0, +) / Double(currentTimings.count)
+        let variance = currentTimings.map { ($0 - avg) * ($0 - avg) }.reduce(0, +) / Double(currentTimings.count)
+        let p99Index = min(Int(Double(sorted.count) * 0.99), sorted.count - 1)
+        let avgCPU = currentCPUUsages.reduce(0, +) / Double(currentCPUUsages.count)
+
+        let endBattery = UIDevice.current.batteryLevel
+        let endThermal = ProcessInfo.processInfo.thermalState.rawValue
+
+        let result = AlgorithmResult(
+            name: ds.name,
+            type: ds.type.rawValue,
+            avgTime: avg,
+            minTime: sorted.first ?? 0,
+            maxTime: sorted.last ?? 0,
+            p99Time: sorted[p99Index],
+            fps: avg > 0 ? 1000.0 / avg : 0,
+            variance: variance,
+            avgCPU: avgCPU,
+            peakMemory: Double(currentPeakMemory) / 1_048_576,
+            frameCount: currentTimings.count,
+            peakThermalState: currentThermalPeak,
+            thermalBefore: algorithmStartThermal,
+            thermalAfter: endThermal,
+            batteryBefore: Double(algorithmStartBattery) * 100,
+            batteryAfter: Double(endBattery) * 100,
+            durationSeconds: now - algorithmStartTime
+        )
+        completedResults.append(result)
+
+        let nextIdx = index + 1
+        if nextIdx < allDownsamplers.count {
+            phase = .cooling(nextAlgorithmIndex: nextIdx, startTime: CACurrentMediaTime())
+            let nextName = allDownsamplers[nextIdx].name
+            let total = allDownsamplers.count
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.onProgress?("✅ \(ds.name) 完成 → 冷却 \(Int(self.cooldownDuration))s → [\(nextIdx + 1)/\(total)] \(nextName)")
+            }
+        } else {
+            finalizeAll()
+        }
+    }
+
+    // MARK: - Final Report
+
+    private func finalizeAll() {
+        phase = .done
         isRunning = false
 
-        var results: [AlgorithmResult] = []
+        let endTime = CACurrentMediaTime()
+        let duration = endTime - benchmarkStartTime
+        let batteryAtEnd = UIDevice.current.batteryLevel
+        let thermalAtEnd = ProcessInfo.processInfo.thermalState.rawValue
 
-        for (i, ds) in allDownsamplers.enumerated() {
-            let times = timings[i]
-            guard !times.isEmpty else { continue }
+        thermalTimeline.append(ThermalSnapshot(
+            frameIndex: 0, thermalState: thermalAtEnd,
+            batteryLevel: Double(batteryAtEnd),
+            timestamp: duration, algorithmIndex: -1
+        ))
 
-            let sorted = times.sorted()
-            let avg = times.reduce(0, +) / Double(times.count)
-            let variance = times.map { ($0 - avg) * ($0 - avg) }.reduce(0, +) / Double(times.count)
-            let p99Index = min(Int(Double(sorted.count) * 0.99), sorted.count - 1)
-            let avgCPU = cpuUsages[i].reduce(0, +) / Double(cpuUsages[i].count)
-
-            let result = AlgorithmResult(
-                name: ds.name,
-                type: ds.type.rawValue,
-                avgTime: avg,
-                minTime: sorted.first ?? 0,
-                maxTime: sorted.last ?? 0,
-                p99Time: sorted[p99Index],
-                fps: avg > 0 ? 1000.0 / avg : 0,
-                variance: variance,
-                avgCPU: avgCPU,
-                peakMemory: Double(peakMemories[i]) / 1_048_576,
-                frameCount: times.count
-            )
-            results.append(result)
+        let batteryDrain = max(0, Double(globalStartBattery - batteryAtEnd)) * 100.0
+        let batteryCapacityWh = 13.85
+        let powerMW: Double
+        if duration > 0 && batteryDrain > 0 {
+            powerMW = (batteryDrain / 100.0) * batteryCapacityWh * 1000.0 / (duration / 3600.0)
+        } else {
+            powerMW = 0
         }
+
+        let peakThermal = thermalTimeline.map { $0.thermalState }.max() ?? globalStartThermal
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
@@ -151,12 +316,22 @@ final class FullBenchmarkRunner {
             scaleFactor: target.displayName,
             frameCount: framesToCollect,
             date: formatter.string(from: Date()),
-            results: results
+            isolatedMode: true,
+            cooldownSeconds: cooldownDuration,
+            results: completedResults,
+            thermalStateBefore: globalStartThermal,
+            thermalStateAfter: thermalAtEnd,
+            peakThermalState: peakThermal,
+            batteryBefore: Double(globalStartBattery) * 100,
+            batteryAfter: Double(batteryAtEnd) * 100,
+            batteryDrainPercent: batteryDrain,
+            durationSeconds: duration,
+            estimatedPowerMW: powerMW,
+            cpuEnergyScore: totalCPUSeconds,
+            thermalTimeline: thermalTimeline
         )
 
-        timings.removeAll()
-        cpuUsages.removeAll()
-        peakMemories.removeAll()
+        completedResults.removeAll()
 
         DispatchQueue.main.async { [weak self] in
             self?.onComplete?(report)
