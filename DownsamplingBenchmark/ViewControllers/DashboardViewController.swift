@@ -8,7 +8,7 @@ final class DashboardViewController: UIViewController {
 
     private var cpuDownsampler: Downsampler = VImageDownsampler()
     private var gpuDownsampler: Downsampler?
-    private var scaleFactor: Float = 0.25
+    private var downsampleTarget: DownsampleTarget = .scale(0.25)
     private var isProcessing = false
 
     private let chartView = LineChartView()
@@ -165,8 +165,8 @@ final class DashboardViewController: UIViewController {
         progressLabel.isHidden = false
         lastReport = nil
 
-        let sf = scaleFactor
-        let runner = FullBenchmarkRunner(scaleFactor: sf, framesToCollect: 60)
+        let tgt = downsampleTarget
+        let runner = FullBenchmarkRunner(target: tgt, framesToCollect: 60)
 
         runner.onProgress = { [weak self] msg in
             self?.progressLabel.text = msg
@@ -244,8 +244,13 @@ final class DashboardViewController: UIViewController {
         case .coreImage: gpuDownsampler = CoreImageDownsampler()
         default: gpuDownsampler = MetalDownsampler()
         }
-        scaleFactor = defaults.float(forKey: "scaleFactor")
-        if scaleFactor <= 0 { scaleFactor = 0.25 }
+        if let key = defaults.string(forKey: "downsampleTarget"),
+           let t = DownsampleTarget.from(persistenceKey: key) {
+            downsampleTarget = t
+        } else {
+            let sf = defaults.float(forKey: "scaleFactor")
+            downsampleTarget = sf > 0 ? .scale(sf) : .scale(0.25)
+        }
 
         let presetRaw = defaults.string(forKey: "cameraPreset") ?? ""
         let preset: CameraManager.Preset = presetRaw == "4K" ? .uhd4K : .hd1080p
@@ -262,8 +267,8 @@ final class DashboardViewController: UIViewController {
         guard !isProcessing else { return }
         isProcessing = true
 
-        let cpuResult = cpuDownsampler.downsample(pixelBuffer, scaleFactor: scaleFactor)
-        let gpuResult = gpuDownsampler?.downsample(pixelBuffer, scaleFactor: scaleFactor)
+        let cpuResult = cpuDownsampler.downsample(pixelBuffer, target: downsampleTarget)
+        let gpuResult = gpuDownsampler?.downsample(pixelBuffer, target: downsampleTarget)
 
         benchmarkEngine.recordCPU(processingTime: cpuResult.processingTime)
         if let gr = gpuResult {

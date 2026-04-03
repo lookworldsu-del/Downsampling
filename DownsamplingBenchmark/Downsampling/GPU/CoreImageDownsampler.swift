@@ -20,13 +20,12 @@ final class CoreImageDownsampler: Downsampler {
         self.ciContext = CIContext(options: options)
     }
 
-    func downsample(_ pixelBuffer: CVPixelBuffer, scaleFactor: Float) -> DownsampleOutput {
+    func downsample(_ pixelBuffer: CVPixelBuffer, target: DownsampleTarget) -> DownsampleOutput {
         let wallStart = CACurrentMediaTime()
 
         let srcWidth = CVPixelBufferGetWidth(pixelBuffer)
         let srcHeight = CVPixelBufferGetHeight(pixelBuffer)
-        let dstWidth = Int(Float(srcWidth) * scaleFactor)
-        let dstHeight = Int(Float(srcHeight) * scaleFactor)
+        let (dstWidth, dstHeight) = target.outputSize(inputWidth: srcWidth, inputHeight: srcHeight)
 
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
@@ -34,9 +33,13 @@ final class CoreImageDownsampler: Downsampler {
             return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)
         }
 
+        let scaleY = Float(dstHeight) / Float(srcHeight)
+        let scaleX = Float(dstWidth) / Float(srcWidth)
+        let aspectRatio = scaleX / scaleY
+
         filter.setValue(ciImage, forKey: kCIInputImageKey)
-        filter.setValue(scaleFactor, forKey: kCIInputScaleKey)
-        filter.setValue(1.0, forKey: kCIInputAspectRatioKey)
+        filter.setValue(scaleY, forKey: kCIInputScaleKey)
+        filter.setValue(aspectRatio, forKey: kCIInputAspectRatioKey)
 
         guard let outputImage = filter.outputImage else {
             return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)

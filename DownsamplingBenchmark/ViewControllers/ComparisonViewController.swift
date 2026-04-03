@@ -18,7 +18,7 @@ final class ComparisonViewController: UIViewController {
     private let batteryLabel = UILabel()
     private let droppedLabel = UILabel()
 
-    private var scaleFactor: Float = 0.25
+    private var downsampleTarget: DownsampleTarget = .scale(0.25)
     private var isProcessing = false
 
     override func viewDidLoad() {
@@ -149,8 +149,13 @@ final class ComparisonViewController: UIViewController {
         default: gpuDownsampler = MetalDownsampler()
         }
 
-        scaleFactor = defaults.float(forKey: "scaleFactor")
-        if scaleFactor <= 0 { scaleFactor = 0.25 }
+        if let key = defaults.string(forKey: "downsampleTarget"),
+           let t = DownsampleTarget.from(persistenceKey: key) {
+            downsampleTarget = t
+        } else {
+            let sf = defaults.float(forKey: "scaleFactor")
+            downsampleTarget = sf > 0 ? .scale(sf) : .scale(0.25)
+        }
 
         let presetRaw = defaults.string(forKey: "cameraPreset") ?? ""
         let preset: CameraManager.Preset = presetRaw == "4K" ? .uhd4K : .hd1080p
@@ -168,12 +173,12 @@ final class ComparisonViewController: UIViewController {
         guard !isProcessing else { return }
         isProcessing = true
 
-        let sf = scaleFactor
+        let tgt = downsampleTarget
         let cpuDS = cpuDownsampler
         let gpuDS = gpuDownsampler
 
-        let cpuResult = cpuDS.downsample(pixelBuffer, scaleFactor: sf)
-        let gpuResult = gpuDS?.downsample(pixelBuffer, scaleFactor: sf)
+        let cpuResult = cpuDS.downsample(pixelBuffer, target: tgt)
+        let gpuResult = gpuDS?.downsample(pixelBuffer, target: tgt)
 
         benchmarkEngine.recordCPU(processingTime: cpuResult.processingTime)
         if let gr = gpuResult {

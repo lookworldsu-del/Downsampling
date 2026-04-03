@@ -13,12 +13,12 @@ final class SettingsViewController: UIViewController {
 
     private let cpuOptions: [DownsamplerID] = [.vImage, .cgContext, .uiGraphics]
     private let gpuOptions: [DownsamplerID] = [.metalCompute, .mps, .coreImage]
-    private let scaleOptions: [ScaleFactor] = ScaleFactor.allCases
+    private let targetOptions: [DownsampleTarget] = DownsampleTarget.allPresets
     private let presetOptions: [CameraManager.Preset] = [.hd1080p, .uhd4K]
 
     private var selectedCPU: DownsamplerID = .vImage
     private var selectedGPU: DownsamplerID = .metalCompute
-    private var selectedScale: ScaleFactor = .quarter
+    private var selectedTarget: DownsampleTarget = .scale(0.25)
     private var selectedPreset: CameraManager.Preset = .hd1080p
 
     override func viewDidLoad() {
@@ -33,8 +33,13 @@ final class SettingsViewController: UIViewController {
         selectedCPU = DownsamplerID(rawValue: defaults.string(forKey: "cpuAlgorithm") ?? "") ?? .vImage
         selectedGPU = DownsamplerID(rawValue: defaults.string(forKey: "gpuAlgorithm") ?? "") ?? .metalCompute
 
-        let sf = defaults.float(forKey: "scaleFactor")
-        selectedScale = ScaleFactor.allCases.first { $0.rawValue == sf } ?? .quarter
+        if let key = defaults.string(forKey: "downsampleTarget"),
+           let t = DownsampleTarget.from(persistenceKey: key) {
+            selectedTarget = t
+        } else {
+            let sf = defaults.float(forKey: "scaleFactor")
+            selectedTarget = sf > 0 ? .scale(sf) : .scale(0.25)
+        }
 
         let preset = defaults.string(forKey: "cameraPreset") ?? ""
         selectedPreset = preset == "4K" ? .uhd4K : .hd1080p
@@ -44,7 +49,7 @@ final class SettingsViewController: UIViewController {
         let defaults = UserDefaults.standard
         defaults.set(selectedCPU.rawValue, forKey: "cpuAlgorithm")
         defaults.set(selectedGPU.rawValue, forKey: "gpuAlgorithm")
-        defaults.set(selectedScale.rawValue, forKey: "scaleFactor")
+        defaults.set(selectedTarget.persistenceKey, forKey: "downsampleTarget")
         defaults.set(selectedPreset.displayName, forKey: "cameraPreset")
         defaults.synchronize()
     }
@@ -76,7 +81,7 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         switch Section(rawValue: section)! {
         case .cpuAlgorithm: return "CPU 算法"
         case .gpuAlgorithm: return "GPU 算法"
-        case .scaleFactor: return "缩放比例"
+        case .scaleFactor: return "降采样目标"
         case .cameraPreset: return "采集分辨率"
         }
     }
@@ -85,7 +90,7 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         switch Section(rawValue: section)! {
         case .cpuAlgorithm: return cpuOptions.count
         case .gpuAlgorithm: return gpuOptions.count
-        case .scaleFactor: return scaleOptions.count
+        case .scaleFactor: return targetOptions.count
         case .cameraPreset: return presetOptions.count
         }
     }
@@ -106,9 +111,9 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             cell.accessoryType = opt == selectedGPU ? .checkmark : .none
 
         case .scaleFactor:
-            let opt = scaleOptions[indexPath.row]
+            let opt = targetOptions[indexPath.row]
             cell.textLabel?.text = opt.displayName
-            cell.accessoryType = opt == selectedScale ? .checkmark : .none
+            cell.accessoryType = opt == selectedTarget ? .checkmark : .none
 
         case .cameraPreset:
             let opt = presetOptions[indexPath.row]
@@ -128,7 +133,7 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case .gpuAlgorithm:
             selectedGPU = gpuOptions[indexPath.row]
         case .scaleFactor:
-            selectedScale = scaleOptions[indexPath.row]
+            selectedTarget = targetOptions[indexPath.row]
         case .cameraPreset:
             selectedPreset = presetOptions[indexPath.row]
         }

@@ -30,7 +30,7 @@ final class FullBenchmarkRunner {
 
     private let allDownsamplers: [Downsampler]
     private let framesToCollect: Int
-    private let scaleFactor: Float
+    private let target: DownsampleTarget
 
     private var collectedFrames: Int = 0
     private var timings: [[Double]] = []
@@ -43,8 +43,8 @@ final class FullBenchmarkRunner {
     var onProgress: ((String) -> Void)?
     var onComplete: ((FullBenchmarkReport) -> Void)?
 
-    init(scaleFactor: Float, framesToCollect: Int = 60) {
-        self.scaleFactor = scaleFactor
+    init(target: DownsampleTarget, framesToCollect: Int = 60) {
+        self.target = target
         self.framesToCollect = framesToCollect
 
         var downsamplers: [Downsampler] = [
@@ -87,7 +87,7 @@ final class FullBenchmarkRunner {
 
         for (i, ds) in allDownsamplers.enumerated() {
             let cpuBefore = BenchmarkEngine.currentCPUUsage()
-            let output = ds.downsample(pixelBuffer, scaleFactor: scaleFactor)
+            let output = ds.downsample(pixelBuffer, target: target)
             let cpuAfter = BenchmarkEngine.currentCPUUsage()
 
             timings[i].append(output.processingTime * 1000)
@@ -148,7 +148,7 @@ final class FullBenchmarkRunner {
             device: Self.deviceName(),
             osVersion: UIDevice.current.systemVersion,
             capturePreset: captureSize,
-            scaleFactor: String(format: "%.3f", scaleFactor),
+            scaleFactor: target.displayName,
             frameCount: framesToCollect,
             date: formatter.string(from: Date()),
             results: results

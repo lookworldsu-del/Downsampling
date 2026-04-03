@@ -8,7 +8,7 @@ final class CGContextDownsampler: Downsampler {
     let name = "CGContext (Core Graphics)"
     let type: DownsamplerType = .cpu
 
-    func downsample(_ pixelBuffer: CVPixelBuffer, scaleFactor: Float) -> DownsampleOutput {
+    func downsample(_ pixelBuffer: CVPixelBuffer, target: DownsampleTarget) -> DownsampleOutput {
         let start = CACurrentMediaTime()
 
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
@@ -36,8 +36,7 @@ final class CGContextDownsampler: Downsampler {
             return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - start, gpuTime: nil, outputWidth: 0, outputHeight: 0)
         }
 
-        let dstWidth = Int(Float(srcWidth) * scaleFactor)
-        let dstHeight = Int(Float(srcHeight) * scaleFactor)
+        let (dstWidth, dstHeight) = target.outputSize(inputWidth: srcWidth, inputHeight: srcHeight)
 
         guard let dstContext = CGContext(
             data: nil,

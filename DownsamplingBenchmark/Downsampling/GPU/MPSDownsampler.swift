@@ -30,13 +30,12 @@ final class MPSDownsampler: Downsampler {
         self.textureCache = cache
     }
 
-    func downsample(_ pixelBuffer: CVPixelBuffer, scaleFactor: Float) -> DownsampleOutput {
+    func downsample(_ pixelBuffer: CVPixelBuffer, target: DownsampleTarget) -> DownsampleOutput {
         let wallStart = CACurrentMediaTime()
 
         let srcWidth = CVPixelBufferGetWidth(pixelBuffer)
         let srcHeight = CVPixelBufferGetHeight(pixelBuffer)
-        let dstWidth = Int(Float(srcWidth) * scaleFactor)
-        let dstHeight = Int(Float(srcHeight) * scaleFactor)
+        let (dstWidth, dstHeight) = target.outputSize(inputWidth: srcWidth, inputHeight: srcHeight)
 
         guard let cache = textureCache else {
             return DownsampleOutput(image: nil, processingTime: CACurrentMediaTime() - wallStart, gpuTime: nil, outputWidth: 0, outputHeight: 0)

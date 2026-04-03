@@ -8,7 +8,7 @@ final class UIGraphicsDownsampler: Downsampler {
     let name = "UIGraphicsImageRenderer"
     let type: DownsamplerType = .cpu
 
-    func downsample(_ pixelBuffer: CVPixelBuffer, scaleFactor: Float) -> DownsampleOutput {
+    func downsample(_ pixelBuffer: CVPixelBuffer, target: DownsampleTarget) -> DownsampleOutput {
         let start = CACurrentMediaTime()
 
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
@@ -32,8 +32,7 @@ final class UIGraphicsDownsampler: Downsampler {
         }
 
         let srcImage = UIImage(cgImage: srcCGImage)
-        let dstWidth = Int(Float(srcWidth) * scaleFactor)
-        let dstHeight = Int(Float(srcHeight) * scaleFactor)
+        let (dstWidth, dstHeight) = target.outputSize(inputWidth: srcWidth, inputHeight: srcHeight)
         let targetSize = CGSize(width: dstWidth, height: dstHeight)
 
         let format = UIGraphicsImageRendererFormat()

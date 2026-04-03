@@ -23,24 +23,62 @@ enum DownsamplerID: String, CaseIterable {
     }
 }
 
-enum ScaleFactor: Float, CaseIterable {
-    case half = 0.5
-    case quarter = 0.25
-    case eighth = 0.125
+enum DownsampleTarget: Equatable {
+    case scale(Float)
+    case fixedSize(width: Int, height: Int)
+
+    static let allPresets: [DownsampleTarget] = [
+        .scale(0.5), .scale(0.25), .scale(0.125),
+        .fixedSize(width: 416, height: 416),
+    ]
+
+    func outputSize(inputWidth: Int, inputHeight: Int) -> (width: Int, height: Int) {
+        switch self {
+        case .scale(let factor):
+            return (max(1, Int(Float(inputWidth) * factor)),
+                    max(1, Int(Float(inputHeight) * factor)))
+        case .fixedSize(let w, let h):
+            return (w, h)
+        }
+    }
 
     var displayName: String {
         switch self {
-        case .half: return "1/2"
-        case .quarter: return "1/4"
-        case .eighth: return "1/8"
+        case .scale(let f):
+            if f == 0.5 { return "1/2" }
+            if f == 0.25 { return "1/4" }
+            if f == 0.125 { return "1/8" }
+            return String(format: "%.3f", f)
+        case .fixedSize(let w, let h):
+            return "\(w)×\(h)"
         }
+    }
+
+    var persistenceKey: String {
+        switch self {
+        case .scale(let f): return String(format: "scale_%.3f", f)
+        case .fixedSize(let w, let h): return "fixed_\(w)x\(h)"
+        }
+    }
+
+    static func from(persistenceKey key: String) -> DownsampleTarget? {
+        if key.hasPrefix("scale_"), let f = Float(String(key.dropFirst(6))) {
+            return .scale(f)
+        }
+        if key.hasPrefix("fixed_") {
+            let parts = key.dropFirst(6).split(separator: "x")
+            if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
+                return .fixedSize(width: w, height: h)
+            }
+        }
+        return nil
     }
 }
 
 struct DownsampleOutput {
     let image: CGImage?
-    let processingTime: TimeInterval  // seconds
-    let gpuTime: TimeInterval?        // GPU command buffer time, nil for CPU
+    let processingTime: TimeInterval
+    let gpuTime: TimeInterval?
     let outputWidth: Int
     let outputHeight: Int
 }
@@ -49,5 +87,5 @@ protocol Downsampler: AnyObject {
     var id: DownsamplerID { get }
     var name: String { get }
     var type: DownsamplerType { get }
-    func downsample(_ pixelBuffer: CVPixelBuffer, scaleFactor: Float) -> DownsampleOutput
+    func downsample(_ pixelBuffer: CVPixelBuffer, target: DownsampleTarget) -> DownsampleOutput
 }
