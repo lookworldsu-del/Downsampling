@@ -8,6 +8,7 @@ import QuartzCore
 struct ConfigurationResult: Codable {
     let capturePreset: String
     let scaleFactor: String
+    let pixelFormat: String
     let frameCount: Int
     let results: [AlgorithmResult]
     let thermalStateBefore: Int
@@ -120,6 +121,7 @@ final class ComprehensiveBenchmarkRunner {
             UIGraphicsDownsampler(),
         ]
         if let metal = MetalDownsampler() { downsamplers.append(metal) }
+        if let metalNCHW = MetalNCHWDownsampler() { downsamplers.append(metalNCHW) }
         if let mps = MPSDownsampler() { downsamplers.append(mps) }
         downsamplers.append(CoreImageDownsampler())
         self.allDownsamplers = downsamplers
@@ -368,6 +370,7 @@ final class ComprehensiveBenchmarkRunner {
         let configResult = ConfigurationResult(
             capturePreset: captureSize,
             scaleFactor: config.target.displayName,
+            pixelFormat: "YUV",
             frameCount: framesToCollect,
             results: configAlgorithmResults,
             thermalStateBefore: configStartThermal,
@@ -404,13 +407,6 @@ final class ComprehensiveBenchmarkRunner {
             finalizeAll()
         }
     }
-
-    // MARK: - Cooling between configs (same preset)
-
-    // The cooling state reuses the algorithm cooling state machine.
-    // When nextAlgorithmIndex == 0 and we've finalized the config, the cooling
-    // callback in processFrame will call beginAlgorithm(0) which starts fresh.
-    // We override beginAlgorithm to detect this via captureSize == "unknown".
 
     // MARK: - Final Report
 

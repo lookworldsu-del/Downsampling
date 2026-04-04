@@ -27,6 +27,14 @@ final class DashboardViewController: UIViewController {
     private var fullRunner: FullBenchmarkRunner?
     private var lastReport: FullBenchmarkReport?
 
+    // MARK: - Camera Format Benchmark
+
+    private let formatBenchButton = UIButton(type: .system)
+    private let formatBenchExportButton = UIButton(type: .system)
+    private let formatBenchProgressLabel = UILabel()
+    private var formatBenchRunner: CameraFormatBenchmark?
+    private var lastFormatReport: CameraFormatReport?
+
     // MARK: - Comprehensive Benchmark
 
     private let comprehensiveButton = UIButton(type: .system)
@@ -162,7 +170,61 @@ final class DashboardViewController: UIViewController {
         exportButton.isHidden = true
         contentStack.addArrangedSubview(exportButton)
 
+        setupFormatBenchmarkUI()
         setupComprehensiveBenchmarkUI()
+    }
+
+    private func setupFormatBenchmarkUI() {
+        let separator = UIView()
+        separator.backgroundColor = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        contentStack.addArrangedSubview(separator)
+
+        let titleLabel = UILabel()
+        titleLabel.text = "摄像头格式测试（YUV vs BGRA × 1080p/4K）"
+        titleLabel.font = .systemFont(ofSize: 16, weight: .bold)
+        titleLabel.numberOfLines = 0
+        contentStack.addArrangedSubview(titleLabel)
+
+        let descLabel = UILabel()
+        descLabel.text = "测量摄像头输出 YUV 和 BGRA 的帧率、缓冲区大小、\nYUV→BGRA CPU 转换耗时，4 组配置各采集 120 帧\n预计耗时 ~30 秒"
+        descLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        descLabel.textColor = .secondaryLabel
+        descLabel.numberOfLines = 0
+        contentStack.addArrangedSubview(descLabel)
+
+        formatBenchButton.setTitle("  摄像头格式测试", for: .normal)
+        formatBenchButton.setImage(UIImage(systemName: "camera.circle.fill"), for: .normal)
+        formatBenchButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        formatBenchButton.backgroundColor = .systemPurple
+        formatBenchButton.setTitleColor(.white, for: .normal)
+        formatBenchButton.tintColor = .white
+        formatBenchButton.layer.cornerRadius = 10
+        formatBenchButton.translatesAutoresizingMaskIntoConstraints = false
+        formatBenchButton.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        formatBenchButton.addTarget(self, action: #selector(startFormatBenchmark), for: .touchUpInside)
+        contentStack.addArrangedSubview(formatBenchButton)
+
+        formatBenchProgressLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        formatBenchProgressLabel.textColor = .secondaryLabel
+        formatBenchProgressLabel.textAlignment = .center
+        formatBenchProgressLabel.numberOfLines = 0
+        formatBenchProgressLabel.isHidden = true
+        contentStack.addArrangedSubview(formatBenchProgressLabel)
+
+        formatBenchExportButton.setTitle("  复制格式测试 JSON", for: .normal)
+        formatBenchExportButton.setImage(UIImage(systemName: "doc.on.clipboard"), for: .normal)
+        formatBenchExportButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        formatBenchExportButton.backgroundColor = .systemGreen
+        formatBenchExportButton.setTitleColor(.white, for: .normal)
+        formatBenchExportButton.tintColor = .white
+        formatBenchExportButton.layer.cornerRadius = 10
+        formatBenchExportButton.translatesAutoresizingMaskIntoConstraints = false
+        formatBenchExportButton.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        formatBenchExportButton.addTarget(self, action: #selector(exportFormatJSON), for: .touchUpInside)
+        formatBenchExportButton.isHidden = true
+        contentStack.addArrangedSubview(formatBenchExportButton)
     }
 
     private func setupComprehensiveBenchmarkUI() {
@@ -268,6 +330,94 @@ final class DashboardViewController: UIViewController {
         present(alert, animated: true)
     }
 
+    // MARK: - Camera Format Benchmark Actions
+
+    @objc private func startFormatBenchmark() {
+        guard formatBenchRunner == nil || !(formatBenchRunner!.isRunning) else { return }
+        guard comprehensiveRunner == nil || !(comprehensiveRunner!.isRunning) else { return }
+        guard fullRunner == nil || !(fullRunner!.isRunning) else { return }
+
+        formatBenchButton.isEnabled = false
+        formatBenchButton.setTitle("  测试中...", for: .normal)
+        formatBenchButton.backgroundColor = .systemGray
+        formatBenchExportButton.isHidden = true
+        formatBenchProgressLabel.isHidden = false
+        lastFormatReport = nil
+
+        let runner = CameraFormatBenchmark(framesToCollect: 120)
+
+        runner.onSwitchPreset = { [weak self] preset, completion in
+            self?.cameraManager.switchPreset(preset, completion: completion)
+        }
+
+        runner.onSwitchFormat = { [weak self] format, completion in
+            self?.cameraManager.switchFormat(format, completion: completion)
+        }
+
+        runner.onProgress = { [weak self] msg in
+            self?.formatBenchProgressLabel.text = msg
+        }
+
+        runner.onComplete = { [weak self] report in
+            guard let self else { return }
+            self.lastFormatReport = report
+            self.formatBenchRunner = nil
+
+            self.formatBenchButton.isEnabled = true
+            self.formatBenchButton.setTitle("  重新测试", for: .normal)
+            self.formatBenchButton.backgroundColor = .systemPurple
+
+            self.formatBenchProgressLabel.text = "测试完成！\(report.results.count) 组配置"
+            self.formatBenchExportButton.isHidden = false
+
+            self.showFormatResults(report)
+            self.loadSettings()
+        }
+
+        formatBenchRunner = runner
+        runner.start()
+    }
+
+    @objc private func exportFormatJSON() {
+        guard let report = lastFormatReport,
+              let json = CameraFormatBenchmark.reportToJSON(report) else { return }
+        UIPasteboard.general.string = json
+        let alert = UIAlertController(
+            title: "已复制到剪贴板",
+            message: "摄像头格式测试 JSON（\(json.count) 字符）已复制。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
+    }
+
+    private func showFormatResults(_ report: CameraFormatReport) {
+        let existingCards = contentStack.arrangedSubviews.filter { $0.tag == 777 }
+        existingCards.forEach { $0.removeFromSuperview() }
+
+        let card = MetricCardView()
+        card.tag = 777
+        card.titleText = "📷 摄像头格式对比"
+
+        var lines: [String] = []
+        for r in report.results {
+            let sizeMB = String(format: "%.2f", Double(r.bufferBytes) / 1_048_576)
+            lines.append("━━ \(r.pixelFormat) \(r.resolution) (\(r.actualSize)) ━━")
+            lines.append(String(format: "  帧率: %.1f FPS  |  帧间隔: %.2f ms (%.2f~%.2f)",
+                                r.deliveredFPS, r.avgFrameIntervalMs,
+                                r.minFrameIntervalMs, r.maxFrameIntervalMs))
+            lines.append(String(format: "  缓冲区: %@ MB (%.1f B/px)  |  丢帧: %d",
+                                sizeMB, r.bytesPerPixel, r.droppedFrames))
+            lines.append(String(format: "  Buffer 访问: %.3f ms", r.avgBufferAccessMs))
+            if r.avgYUVConvertMs > 0 {
+                lines.append(String(format: "  YUV→BGRA CPU 转换: %.2f ms", r.avgYUVConvertMs))
+            }
+            lines.append("")
+        }
+        card.setDetail(lines.joined(separator: "\n"))
+        contentStack.addArrangedSubview(card)
+    }
+
     // MARK: - Comprehensive Benchmark Actions
 
     @objc private func startComprehensiveBenchmark() {
@@ -364,7 +514,7 @@ final class DashboardViewController: UIViewController {
         for cfg in report.configurations {
             let cfgCard = MetricCardView()
             cfgCard.tag = 888
-            cfgCard.titleText = "📋 \(cfg.capturePreset) → \(cfg.scaleFactor)"
+            cfgCard.titleText = "📋 [\(cfg.pixelFormat)] \(cfg.capturePreset) → \(cfg.scaleFactor)"
 
             var cfgLines: [String] = []
             let sortedResults = cfg.results.sorted { $0.avgTime < $1.avgTime }
@@ -454,6 +604,11 @@ final class DashboardViewController: UIViewController {
     }
 
     private func processFrame(_ pixelBuffer: CVPixelBuffer) {
+        if let runner = formatBenchRunner, runner.isRunning {
+            runner.processFrame(pixelBuffer)
+            return
+        }
+
         if let runner = comprehensiveRunner, runner.isRunning {
             runner.processFrame(pixelBuffer)
             return
@@ -508,7 +663,9 @@ extension DashboardViewController: CameraManagerDelegate {
     func cameraManager(_ manager: CameraManager, didOutput pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         processFrame(pixelBuffer)
     }
-    func cameraManager(_ manager: CameraManager, didDrop sampleBuffer: CMSampleBuffer, reason: String) {}
+    func cameraManager(_ manager: CameraManager, didDrop sampleBuffer: CMSampleBuffer, reason: String) {
+        formatBenchRunner?.recordDroppedFrame()
+    }
 }
 
 // MARK: - MetricCardView

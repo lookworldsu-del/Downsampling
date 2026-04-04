@@ -42,10 +42,31 @@ final class CameraManager: NSObject {
         }
     }
 
-    private(set) var currentPreset: Preset = .hd1080p
+    enum PixelFormat: String, Codable {
+        case yuv
+        case bgra
 
-    func configure(preset: Preset = .hd1080p) {
+        var pixelFormatType: OSType {
+            switch self {
+            case .yuv:  return kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            case .bgra: return kCVPixelFormatType_32BGRA
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case .yuv:  return "YUV"
+            case .bgra: return "BGRA"
+            }
+        }
+    }
+
+    private(set) var currentPreset: Preset = .hd1080p
+    private(set) var currentFormat: PixelFormat = .yuv
+
+    func configure(preset: Preset = .hd1080p, format: PixelFormat = .yuv) {
         currentPreset = preset
+        currentFormat = format
         session.beginConfiguration()
         session.sessionPreset = preset.sessionPreset
 
@@ -62,7 +83,7 @@ final class CameraManager: NSObject {
         }
 
         videoOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            kCVPixelBufferPixelFormatTypeKey as String: format.pixelFormatType
         ]
         videoOutput.alwaysDiscardsLateVideoFrames = false
         videoOutput.setSampleBufferDelegate(self, queue: processingQueue)
@@ -85,6 +106,20 @@ final class CameraManager: NSObject {
             guard let self else { return }
             self.session.beginConfiguration()
             self.session.sessionPreset = preset.sessionPreset
+            self.session.commitConfiguration()
+            Thread.sleep(forTimeInterval: 0.5)
+            DispatchQueue.main.async { completion() }
+        }
+    }
+
+    func switchFormat(_ format: PixelFormat, completion: @escaping () -> Void) {
+        currentFormat = format
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            self.session.beginConfiguration()
+            self.videoOutput.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String: format.pixelFormatType
+            ]
             self.session.commitConfiguration()
             Thread.sleep(forTimeInterval: 0.5)
             DispatchQueue.main.async { completion() }

@@ -122,6 +122,139 @@ kernel void yuv_to_bgra(
     outTexture.write(yuv_to_rgb(y, cb, cr), gid);
 }
 
+// ─── NCHW Direct Output kernels (zero-copy AI inference path) ─────
+// Output: device float* buffer in NCHW layout [R_plane, G_plane, B_plane]
+// Skips texture→CGImage→tensor conversion entirely
+
+struct NCHWParams {
+    float offsetX;
+    float offsetY;
+    float innerSizeX;
+    float innerSizeY;
+    int   width;
+    int   height;
+    float scaleX;
+    float scaleY;
+    float scaleZ;
+    float biasX;
+    float biasY;
+    float biasZ;
+};
+
+kernel void downsample_yuv_bilinear_nchw(
+    texture2d<float, access::sample> yTexture  [[texture(0)]],
+    texture2d<float, access::sample> uvTexture [[texture(1)]],
+    device float *outputBuffer                 [[buffer(0)]],
+    constant NCHWParams &params                [[buffer(1)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(params.width) || gid.y >= uint(params.height)) return;
+
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    float2 uv = (float2(gid) + 0.5) / float2(params.width, params.height);
+
+    float y  = yTexture.sample(s, uv).r;
+    float cb = uvTexture.sample(s, uv).r;
+    float cr = uvTexture.sample(s, uv).g;
+
+    float4 rgb = yuv_to_rgb(y, cb, cr);
+
+    int idx = gid.y * params.width + gid.x;
+    int planeSize = params.width * params.height;
+    outputBuffer[0 * planeSize + idx] = rgb.r * params.scaleX + params.biasX;
+    outputBuffer[1 * planeSize + idx] = rgb.g * params.scaleY + params.biasY;
+    outputBuffer[2 * planeSize + idx] = rgb.b * params.scaleZ + params.biasZ;
+}
+
+kernel void downsample_yuv_letterbox_nchw(
+    texture2d<float, access::sample> yTexture  [[texture(0)]],
+    texture2d<float, access::sample> uvTexture [[texture(1)]],
+    device float *outputBuffer                 [[buffer(0)]],
+    constant NCHWParams &params                [[buffer(1)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(params.width) || gid.y >= uint(params.height)) return;
+
+    int idx = gid.y * params.width + gid.x;
+    int planeSize = params.width * params.height;
+
+    float2 pos = float2(gid) - float2(params.offsetX, params.offsetY);
+
+    if (pos.x < 0.0 || pos.y < 0.0 || pos.x >= params.innerSizeX || pos.y >= params.innerSizeY) {
+        float grayR = 0.5 * params.scaleX + params.biasX;
+        float grayG = 0.5 * params.scaleY + params.biasY;
+        float grayB = 0.5 * params.scaleZ + params.biasZ;
+        outputBuffer[0 * planeSize + idx] = grayR;
+        outputBuffer[1 * planeSize + idx] = grayG;
+        outputBuffer[2 * planeSize + idx] = grayB;
+        return;
+    }
+
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    float2 uv = (pos + 0.5) / float2(params.innerSizeX, params.innerSizeY);
+
+    float y  = yTexture.sample(s, uv).r;
+    float cb = uvTexture.sample(s, uv).r;
+    float cr = uvTexture.sample(s, uv).g;
+
+    float4 rgb = yuv_to_rgb(y, cb, cr);
+
+    outputBuffer[0 * planeSize + idx] = rgb.r * params.scaleX + params.biasX;
+    outputBuffer[1 * planeSize + idx] = rgb.g * params.scaleY + params.biasY;
+    outputBuffer[2 * planeSize + idx] = rgb.b * params.scaleZ + params.biasZ;
+}
+
+kernel void downsample_bilinear_nchw(
+    texture2d<float, access::sample> inTexture [[texture(0)]],
+    device float *outputBuffer                 [[buffer(0)]],
+    constant NCHWParams &params                [[buffer(1)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(params.width) || gid.y >= uint(params.height)) return;
+
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    float2 uv = (float2(gid) + 0.5) / float2(params.width, params.height);
+    float4 color = inTexture.sample(s, uv);
+
+    int idx = gid.y * params.width + gid.x;
+    int planeSize = params.width * params.height;
+    outputBuffer[0 * planeSize + idx] = color.r * params.scaleX + params.biasX;
+    outputBuffer[1 * planeSize + idx] = color.g * params.scaleY + params.biasY;
+    outputBuffer[2 * planeSize + idx] = color.b * params.scaleZ + params.biasZ;
+}
+
+kernel void downsample_letterbox_nchw(
+    texture2d<float, access::sample> inTexture [[texture(0)]],
+    device float *outputBuffer                 [[buffer(0)]],
+    constant NCHWParams &params                [[buffer(1)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(params.width) || gid.y >= uint(params.height)) return;
+
+    int idx = gid.y * params.width + gid.x;
+    int planeSize = params.width * params.height;
+
+    float2 pos = float2(gid) - float2(params.offsetX, params.offsetY);
+
+    if (pos.x < 0.0 || pos.y < 0.0 || pos.x >= params.innerSizeX || pos.y >= params.innerSizeY) {
+        float grayR = 0.5 * params.scaleX + params.biasX;
+        float grayG = 0.5 * params.scaleY + params.biasY;
+        float grayB = 0.5 * params.scaleZ + params.biasZ;
+        outputBuffer[0 * planeSize + idx] = grayR;
+        outputBuffer[1 * planeSize + idx] = grayG;
+        outputBuffer[2 * planeSize + idx] = grayB;
+        return;
+    }
+
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    float2 uv = (pos + 0.5) / float2(params.innerSizeX, params.innerSizeY);
+    float4 color = inTexture.sample(s, uv);
+
+    outputBuffer[0 * planeSize + idx] = color.r * params.scaleX + params.biasX;
+    outputBuffer[1 * planeSize + idx] = color.g * params.scaleY + params.biasY;
+    outputBuffer[2 * planeSize + idx] = color.b * params.scaleZ + params.biasZ;
+}
+
 // ─── Utility kernels ───────────────────────────────────────────────
 
 kernel void downsample_area_average(

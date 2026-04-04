@@ -13,13 +13,14 @@ enum DownsamplerID: String, CaseIterable {
     case cgContext = "CGContext (Core Graphics)"
     case uiGraphics = "UIGraphicsImageRenderer"
     case metalCompute = "Metal Compute Shader"
+    case metalNCHW = "Metal NCHW Direct"
     case mps = "MPS (Metal Performance Shaders)"
     case coreImage = "Core Image (CILanczos)"
 
     var type: DownsamplerType {
         switch self {
         case .vImage, .cgContext, .uiGraphics: return .cpu
-        case .metalCompute, .mps, .coreImage: return .gpu
+        case .metalCompute, .metalNCHW, .mps, .coreImage: return .gpu
         }
     }
 }

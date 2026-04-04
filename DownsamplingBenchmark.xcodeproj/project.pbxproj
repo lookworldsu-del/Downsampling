@@ -28,6 +28,8 @@
 		AA000019 /* CoreImageDownsampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000022 /* CoreImageDownsampler.swift */; };
 		AA000020 /* FullBenchmarkRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000023 /* FullBenchmarkRunner.swift */; };
 		AA000021 /* ComprehensiveBenchmarkRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000024 /* ComprehensiveBenchmarkRunner.swift */; };
+		AA000022 /* CameraFormatBenchmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000025 /* CameraFormatBenchmark.swift */; };
+		AA000023 /* MetalNCHWDownsampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000026 /* MetalNCHWDownsampler.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -54,6 +56,8 @@
 		BB000022 /* CoreImageDownsampler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreImageDownsampler.swift; sourceTree = "<group>"; };
 		BB000023 /* FullBenchmarkRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullBenchmarkRunner.swift; sourceTree = "<group>"; };
 		BB000024 /* ComprehensiveBenchmarkRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComprehensiveBenchmarkRunner.swift; sourceTree = "<group>"; };
+		BB000025 /* CameraFormatBenchmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraFormatBenchmark.swift; sourceTree = "<group>"; };
+		BB000026 /* MetalNCHWDownsampler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalNCHWDownsampler.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -123,6 +127,7 @@
 			isa = PBXGroup;
 			children = (
 				BB000007 /* MetalDownsampler.swift */,
+				BB000026 /* MetalNCHWDownsampler.swift */,
 				BB000008 /* MPSDownsampler.swift */,
 				BB000022 /* CoreImageDownsampler.swift */,
 				BB000009 /* Downsampling.metal */,
@@ -137,6 +142,7 @@
 				BB000011 /* BenchmarkResult.swift */,
 				BB000023 /* FullBenchmarkRunner.swift */,
 				BB000024 /* ComprehensiveBenchmarkRunner.swift */,
+				BB000025 /* CameraFormatBenchmark.swift */,
 			);
 			path = Benchmark;
 			sourceTree = "<group>";
@@ -257,6 +263,8 @@
 				AA000019 /* CoreImageDownsampler.swift in Sources */,
 				AA000020 /* FullBenchmarkRunner.swift in Sources */,
 				AA000021 /* ComprehensiveBenchmarkRunner.swift in Sources */,
+				AA000022 /* CameraFormatBenchmark.swift in Sources */,
+				AA000023 /* MetalNCHWDownsampler.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

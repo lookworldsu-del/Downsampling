@@ -3,44 +3,56 @@ import CoreVideo
 import CoreGraphics
 import QuartzCore
 
-final class MetalDownsampler: Downsampler {
+/// Zero-copy NCHW direct output path for AI inference.
+/// GPU writes float32 NCHW tensor into shared memory — no CGImage, no getBytes, no tensor conversion.
+final class MetalNCHWDownsampler: Downsampler {
 
-    let id: DownsamplerID = .metalCompute
-    let name = "Metal Compute Shader"
+    let id: DownsamplerID = .metalNCHW
+    let name = "Metal NCHW Direct"
     let type: DownsamplerType = .gpu
+
+    struct ConvertParam {
+        /// yuv_to_rgb already outputs [0, 1] float. Default identity keeps [0, 1].
+        /// For TNN models expecting specific normalization, set scale/bias accordingly.
+        /// e.g. ImageNet: scale = {1, 1, 1}, bias = {-0.485, -0.456, -0.406}
+        var scale: SIMD3<Float> = SIMD3(1.0, 1.0, 1.0)
+        var bias: SIMD3<Float> = .zero
+    }
+
+    var convertParam = ConvertParam()
 
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
 
-    private let pipelineState: MTLComputePipelineState
-    private let letterboxPipeline: MTLComputePipelineState
-    private let yuvPipeline: MTLComputePipelineState
+    private let yuvBilinearPipeline: MTLComputePipelineState
     private let yuvLetterboxPipeline: MTLComputePipelineState
+    private let bgraBilinearPipeline: MTLComputePipelineState
+    private let bgraLetterboxPipeline: MTLComputePipelineState
 
     private var textureCache: CVMetalTextureCache?
-    private var outputTexture: MTLTexture?
-    private var lastOutputSize: (Int, Int) = (0, 0)
+    private var outputBuffer: MTLBuffer?
+    private var lastBufferFloatCount: Int = 0
 
     init?() {
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue(),
               let library = device.makeDefaultLibrary(),
-              let fn1 = library.makeFunction(name: "downsample_bilinear"),
+              let fn1 = library.makeFunction(name: "downsample_yuv_bilinear_nchw"),
               let p1 = try? device.makeComputePipelineState(function: fn1),
-              let fn2 = library.makeFunction(name: "downsample_letterbox"),
+              let fn2 = library.makeFunction(name: "downsample_yuv_letterbox_nchw"),
               let p2 = try? device.makeComputePipelineState(function: fn2),
-              let fn3 = library.makeFunction(name: "downsample_yuv_bilinear"),
+              let fn3 = library.makeFunction(name: "downsample_bilinear_nchw"),
               let p3 = try? device.makeComputePipelineState(function: fn3),
-              let fn4 = library.makeFunction(name: "downsample_yuv_letterbox"),
+              let fn4 = library.makeFunction(name: "downsample_letterbox_nchw"),
               let p4 = try? device.makeComputePipelineState(function: fn4)
         else { return nil }
 
         self.device = device
         self.commandQueue = queue
-        self.pipelineState = p1
-        self.letterboxPipeline = p2
-        self.yuvPipeline = p3
-        self.yuvLetterboxPipeline = p4
+        self.yuvBilinearPipeline = p1
+        self.yuvLetterboxPipeline = p2
+        self.bgraBilinearPipeline = p3
+        self.bgraLetterboxPipeline = p4
 
         var cache: CVMetalTextureCache?
         CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
@@ -58,11 +70,26 @@ final class MetalDownsampler: Downsampler {
 
         let isYUV = isYUVFormat(pixelBuffer)
         let layout = target.letterboxLayout(inputWidth: srcWidth, inputHeight: srcHeight)
-        let outTex = getOrCreateOutputTexture(width: dstWidth, height: dstHeight)
+        let buffer = getOrCreateOutputBuffer(width: dstWidth, height: dstHeight)
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
             return fail(wallStart)
+        }
+
+        var params = NCHWParamsStruct(
+            offsetX: 0, offsetY: 0,
+            innerSizeX: Float(dstWidth), innerSizeY: Float(dstHeight),
+            width: Int32(dstWidth), height: Int32(dstHeight),
+            scaleX: convertParam.scale.x, scaleY: convertParam.scale.y, scaleZ: convertParam.scale.z,
+            biasX: convertParam.bias.x, biasY: convertParam.bias.y, biasZ: convertParam.bias.z
+        )
+
+        if let lb = layout {
+            params.offsetX = Float(lb.innerX)
+            params.offsetY = Float(lb.innerY)
+            params.innerSizeX = Float(lb.innerWidth)
+            params.innerSizeY = Float(lb.innerHeight)
         }
 
         if isYUV {
@@ -70,39 +97,21 @@ final class MetalDownsampler: Downsampler {
                 encoder.endEncoding()
                 return fail(wallStart)
             }
-            if let lb = layout {
-                encoder.setComputePipelineState(yuvLetterboxPipeline)
-                encoder.setTexture(yTex, index: 0)
-                encoder.setTexture(uvTex, index: 1)
-                encoder.setTexture(outTex, index: 2)
-                var params = SIMD4<Float>(Float(lb.innerX), Float(lb.innerY),
-                                          Float(lb.innerWidth), Float(lb.innerHeight))
-                encoder.setBytes(&params, length: MemoryLayout<SIMD4<Float>>.size, index: 0)
-            } else {
-                encoder.setComputePipelineState(yuvPipeline)
-                encoder.setTexture(yTex, index: 0)
-                encoder.setTexture(uvTex, index: 1)
-                encoder.setTexture(outTex, index: 2)
-            }
+            encoder.setComputePipelineState(layout != nil ? yuvLetterboxPipeline : yuvBilinearPipeline)
+            encoder.setTexture(yTex, index: 0)
+            encoder.setTexture(uvTex, index: 1)
         } else {
             guard let inputTexture = makeBGRATexture(pixelBuffer: pixelBuffer, cache: cache,
                                                      width: srcWidth, height: srcHeight) else {
                 encoder.endEncoding()
                 return fail(wallStart)
             }
-            if let lb = layout {
-                encoder.setComputePipelineState(letterboxPipeline)
-                encoder.setTexture(inputTexture, index: 0)
-                encoder.setTexture(outTex, index: 1)
-                var params = SIMD4<Float>(Float(lb.innerX), Float(lb.innerY),
-                                          Float(lb.innerWidth), Float(lb.innerHeight))
-                encoder.setBytes(&params, length: MemoryLayout<SIMD4<Float>>.size, index: 0)
-            } else {
-                encoder.setComputePipelineState(pipelineState)
-                encoder.setTexture(inputTexture, index: 0)
-                encoder.setTexture(outTex, index: 1)
-            }
+            encoder.setComputePipelineState(layout != nil ? bgraLetterboxPipeline : bgraBilinearPipeline)
+            encoder.setTexture(inputTexture, index: 0)
         }
+
+        encoder.setBuffer(buffer, offset: 0, index: 0)
+        encoder.setBytes(&params, length: MemoryLayout<NCHWParamsStruct>.size, index: 1)
 
         let tgs = MTLSize(width: 16, height: 16, depth: 1)
         let tgc = MTLSize(width: (dstWidth + 15) / 16, height: (dstHeight + 15) / 16, depth: 1)
@@ -117,8 +126,12 @@ final class MetalDownsampler: Downsampler {
         commandBuffer.waitUntilCompleted()
 
         let gpuTime = gpuEndTime - gpuStartTime
-        let image = makeImage(from: outTex, width: dstWidth, height: dstHeight)
-        let tensor: [Float]? = image.map { cgImageToRGBTensor($0) }
+        let floatCount = dstWidth * dstHeight * 3
+
+        let tensorPtr = buffer.contents().assumingMemoryBound(to: Float.self)
+        let tensor = Array(UnsafeBufferPointer(start: tensorPtr, count: floatCount))
+
+        let image = makePreviewImage(from: tensor, width: dstWidth, height: dstHeight)
 
         let wallTime = CACurrentMediaTime() - wallStart
         return DownsampleOutput(image: image, rgbTensor: tensor,
@@ -126,7 +139,20 @@ final class MetalDownsampler: Downsampler {
                                 outputWidth: dstWidth, outputHeight: dstHeight)
     }
 
-    // MARK: - Texture helpers
+    // MARK: - Buffer Management
+
+    private func getOrCreateOutputBuffer(width: Int, height: Int) -> MTLBuffer {
+        let floatCount = width * height * 3
+        if let buf = outputBuffer, lastBufferFloatCount == floatCount { return buf }
+
+        let byteCount = floatCount * MemoryLayout<Float>.size
+        let buf = device.makeBuffer(length: byteCount, options: .storageModeShared)!
+        outputBuffer = buf
+        lastBufferFloatCount = floatCount
+        return buf
+    }
+
+    // MARK: - Texture Helpers
 
     private func makeYUVTextures(pixelBuffer: CVPixelBuffer, cache: CVMetalTextureCache) -> (MTLTexture, MTLTexture)? {
         let yW = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
@@ -156,27 +182,28 @@ final class MetalDownsampler: Downsampler {
         return CVMetalTextureGetTexture(cv)
     }
 
-    private func getOrCreateOutputTexture(width: Int, height: Int) -> MTLTexture {
-        if let tex = outputTexture, lastOutputSize == (width, height) { return tex }
-        let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
-        )
-        desc.usage = [.shaderWrite, .shaderRead]
-        let tex = device.makeTexture(descriptor: desc)!
-        outputTexture = tex
-        lastOutputSize = (width, height)
-        return tex
-    }
+    /// Reconstruct a CGImage from NCHW float tensor for UI preview only.
+    /// In production this is unnecessary — the tensor goes directly to TNN.
+    private func makePreviewImage(from tensor: [Float], width: Int, height: Int) -> CGImage? {
+        let pixelCount = width * height
+        guard tensor.count == pixelCount * 3 else { return nil }
 
-    private func makeImage(from texture: MTLTexture, width: Int, height: Int) -> CGImage? {
+        var bgra = [UInt8](repeating: 255, count: pixelCount * 4)
+        let rPlane = tensor
+        for i in 0..<pixelCount {
+            let r = rPlane[i]
+            let g = tensor[pixelCount + i]
+            let b = tensor[2 * pixelCount + i]
+            bgra[i * 4 + 0] = UInt8(clamping: Int(b * 255.0))
+            bgra[i * 4 + 1] = UInt8(clamping: Int(g * 255.0))
+            bgra[i * 4 + 2] = UInt8(clamping: Int(r * 255.0))
+            bgra[i * 4 + 3] = 255
+        }
+
         let bytesPerRow = width * 4
-        var pixelData = [UInt8](repeating: 0, count: bytesPerRow * height)
-        texture.getBytes(&pixelData, bytesPerRow: bytesPerRow,
-                         from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
-
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(
-            data: &pixelData, width: width, height: height,
+            data: &bgra, width: width, height: height,
             bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace,
             bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
         ) else { return nil }
@@ -188,4 +215,21 @@ final class MetalDownsampler: Downsampler {
                          processingTime: CACurrentMediaTime() - wallStart,
                          gpuTime: nil, outputWidth: 0, outputHeight: 0)
     }
+}
+
+// MARK: - Params struct matching Metal side NCHWParams
+
+private struct NCHWParamsStruct {
+    var offsetX: Float
+    var offsetY: Float
+    var innerSizeX: Float
+    var innerSizeY: Float
+    var width: Int32
+    var height: Int32
+    var scaleX: Float
+    var scaleY: Float
+    var scaleZ: Float
+    var biasX: Float
+    var biasY: Float
+    var biasZ: Float
 }
